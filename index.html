@@ -33,6 +33,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <style>
   :root{
@@ -158,6 +159,59 @@
     color:var(--accent-ink); font-size:12px;
   }
 
+  /* Panel de revisión de columnas */
+  .config-panel{ align-items:stretch; text-align:left; }
+  .config-panel h2{ text-align:center; }
+  .config-panel > p{ margin:0 auto; text-align:center; }
+  .config-panel > button{ align-self:center; min-width:220px; }
+  .config-lista{
+    display:flex; flex-direction:column;
+    border:1px solid var(--line); border-radius:10px;
+    overflow:hidden;
+    max-height:52vh; overflow-y:auto;
+  }
+  .config-fila{
+    display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:11px 16px;
+    border-bottom:1px solid var(--line);
+    background:var(--panel);
+  }
+  .config-fila:last-child{ border-bottom:0; }
+  .config-fila:nth-child(even){ background:#f8f9fb; }
+  .config-info{ min-width:0; }
+  .config-nombre{ font-size:13.5px; font-weight:600; }
+  .config-muestra{
+    font-size:11.5px; color:var(--muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:52vw;
+  }
+  .config-fila select{
+    font:inherit; font-size:12.5px;
+    padding:6px 9px;
+    border:1px solid var(--line); border-radius:8px;
+    background:var(--paper); color:var(--ink);
+    flex:none;
+  }
+  .config-fila select:focus-visible{ outline:2px solid var(--accent-ink); outline-offset:1px; }
+
+  .btn-mini{ padding:5px 12px; font-size:12px; flex:none; }
+  .srv-aviso{
+    width:100%;
+    border:1px dashed var(--accent-ink);
+    background:#fffbe8;
+    border-radius:10px;
+    padding:14px 16px;
+    font-size:13px; line-height:1.6;
+  }
+  .srv-aviso pre{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:10px 12px;
+    margin-top:8px;
+    font-size:12px;
+    overflow:auto;
+  }
+
   /* Visor de Power BI embebido */
   #visorPbi{
     display:none;
@@ -246,8 +300,16 @@
     background:var(--paper); color:var(--ink);
     max-width:160px;
   }
+  .grafico-head select:disabled{ opacity:.55; cursor:not-allowed; }
   .grafico-body{ flex:1; position:relative; min-height:240px; }
   .grafico-body canvas{ position:absolute; inset:0; }
+  .grafico-vacio{
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    text-align:center; padding:20px;
+    font-size:13px; color:var(--muted); line-height:1.6;
+    background:var(--panel);
+  }
 
   .tabla-card{
     background:var(--panel);
@@ -267,6 +329,8 @@
     position:sticky; top:0;
   }
   .tabla-nota{ font-size:11.5px; color:var(--muted); margin-top:8px; }
+  td a{ color:var(--accent-ink); text-decoration:underline; }
+  td a:hover{ color:var(--ink); }
 
   footer{
     padding:12px 24px; font-size:12px; color:var(--muted);
@@ -301,6 +365,7 @@
   </div>
   <div class="toolbar">
     <button type="button" id="btnNuevo" hidden onclick="volverACarga()">Cambiar fuente</button>
+    <button type="button" id="btnColumnas" hidden onclick="reabrirConfiguracion()">Columnas</button>
     <button type="button" id="btnFullPbi" hidden onclick="pantallaCompletaPbi()">Pantalla completa</button>
     <button type="button" id="btnImprimir" hidden onclick="window.print()">Imprimir / PDF</button>
   </div>
@@ -316,6 +381,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected="true" data-tab="datos" onclick="cambiarTabSetup('datos')">Subir datos</button>
       <button role="tab" aria-selected="false" data-tab="powerbi" onclick="cambiarTabSetup('powerbi')">Conecta tu dashboard</button>
+      <button role="tab" aria-selected="false" data-tab="pbix" onclick="cambiarTabSetup('pbix')">Leer .pbix</button>
     </div>
 
     <!-- Opción 1: subir datos -->
@@ -344,7 +410,25 @@
         <button class="primary" type="button" onclick="conectarPowerBi()">Conecta tu dashboard</button>
       </div>
     </div>
+
+    <!-- Opción 3: leer estructura de un .pbix -->
+    <div class="panel-setup" id="panelSetup-pbix">
+      <div class="dropzone" id="dropzonePbix" tabindex="0" role="button" aria-label="Subir archivo .pbix">
+        <strong>Arrastra tu archivo .pbix aquí</strong>
+        o haz clic para elegirlo · PBIX, PBIT
+      </div>
+      <input type="file" id="inputFilePbix" accept=".pbix,.pbit" hidden>
+      <p class="hint" style="max-width:560px">Muestra la <strong>radiografía del informe</strong> (páginas, visuales, campos y consultas) directamente en el navegador.
+      Y si activas el <strong>servidor local incluido</strong> (servidor_pbix.py), también lee los <strong>datos completos del modelo</strong> y genera el dashboard con ellos.</p>
+      <p class="msg-error" id="errorPbix"></p>
+    </div>
   </section>
+
+  <!-- Resultado de la lectura del .pbix -->
+  <section class="setup config-panel" id="pbixInfo" style="display:none"></section>
+
+  <!-- Panel de revisión de columnas (paso intermedio) -->
+  <section class="setup config-panel" id="configCols" style="display:none"></section>
 
   <!-- Visor de Power BI embebido -->
   <section id="visorPbi"></section>
@@ -368,6 +452,7 @@
 <footer>
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://calypsobronte.github.io/" target="_blank" rel="noopener author">RyukPlay</a></span>
+  <span>v3.1</span>
 </footer>
 
 <script>
@@ -376,7 +461,9 @@
    Sube CSV/Excel → detecta tipos de columna → construye el dashboard.
    ===================================================================== */
 
-let datos = [];          // filas originales {col: valor}
+let datos = [];          // filas activas {col: valor}
+let datosCrudos = [];    // filas tal como llegaron del archivo
+const MEDIDA_CONTEO = '— Conteo de filas —'; // medida universal, no requiere columnas numéricas
 let columnas = [];       // [{nombre, tipo: 'numero'|'fecha'|'categoria'}]
 let filtrosActivos = {}; // {columna: valorSeleccionado}
 let charts = {};         // instancias Chart.js
@@ -402,6 +489,7 @@ function libreriasListas(){
 window.addEventListener('load', () => {
   // Aviso temprano si los CDN no cargaron
   setTimeout(() => { libreriasListas(); }, 800);
+  preparaDropzonePbix();
 });
 
 /* ---------------- Limpieza de valores ---------------- */
@@ -515,6 +603,298 @@ function extraerFilasDeHoja(hoja){
   return filas;
 }
 
+/* ---------------- Servidor local de lectura completa ----------------
+   El navegador no puede descomprimir los datos del .pbix (XPress9),
+   pero un mini-servidor local en Python (servidor_pbix.py + pbixray)
+   sí. Si está corriendo, la página lee las tablas completas.        */
+
+const URL_SERVIDOR_LOCAL  = 'http://127.0.0.1:8765';
+/* Si publicas el servidor en la nube (por ejemplo Render), pega aquí su URL,
+   por ejemplo: 'https://ryuk-pbix.onrender.com'  (sin barra final).        */
+const URL_SERVIDOR_REMOTO = '';
+
+let urlServidorPbix = ''; // se fija con el primer servidor que responda
+
+async function probarServidor(base, ms){
+  try{
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    const r = await fetch(base + '/salud', {signal: ctl.signal});
+    clearTimeout(t);
+    if (!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+
+async function estadoServidorPbix(){
+  // Primero el servidor local (rápido y privado); luego el remoto si está configurado
+  const candidatos = [[URL_SERVIDOR_LOCAL, 1200]];
+  if (URL_SERVIDOR_REMOTO.trim()) candidatos.push([URL_SERVIDOR_REMOTO.trim().replace(/\/+$/,''), 6000]);
+  for (const [base, ms] of candidatos){
+    const j = await probarServidor(base, ms);
+    if (j){
+      urlServidorPbix = base;
+      return j.pbixray ? {estado:'ok'} : {estado:'sin-pbixray'};
+    }
+  }
+  return {estado:'sin-servidor'};
+}
+
+async function cargarTablaPbix(token, nombre, boton){
+  const txt = boton.textContent;
+  boton.disabled = true; boton.textContent = 'Cargando…';
+  try{
+    const r = await fetch(urlServidorPbix + '/tabla?token=' + encodeURIComponent(token) +
+                          '&nombre=' + encodeURIComponent(nombre));
+    const cuerpo = await r.json();
+    if (!r.ok) throw new Error(cuerpo.error || 'Error del servidor');
+    if (!Array.isArray(cuerpo) || !cuerpo.length) throw new Error('La tabla llegó vacía.');
+    hojaUsada = nombre;
+    document.getElementById('pbixInfo').style.display = 'none';
+    iniciarDashboard(limpiarFilas(cuerpo));
+  }catch(e){
+    boton.disabled = false; boton.textContent = txt;
+    alert('No se pudo cargar la tabla: ' + (e.message || e));
+  }
+}
+
+/* ---------------- Lector de archivos .pbix / .pbit ----------------
+   Un .pbix es un ZIP. La estructura del informe (Report/Layout, JSON en
+   UTF-16) y las consultas M (DataMashup) son legibles; los DATOS del
+   modelo van comprimidos con XPress9 (propietario) y no se pueden leer. */
+
+const NOMBRES_VISUAL = {
+  barChart:'Barras horizontales', columnChart:'Columnas', clusteredBarChart:'Barras agrupadas',
+  clusteredColumnChart:'Columnas agrupadas', stackedBarChart:'Barras apiladas',
+  stackedColumnChart:'Columnas apiladas', hundredPercentStackedBarChart:'Barras 100% apiladas',
+  hundredPercentStackedColumnChart:'Columnas 100% apiladas',
+  lineChart:'Líneas', areaChart:'Áreas', stackedAreaChart:'Áreas apiladas',
+  lineStackedColumnComboChart:'Combinado línea/columnas', lineClusteredColumnComboChart:'Combinado línea/columnas',
+  pieChart:'Torta', donutChart:'Dona', treemap:'Treemap', funnel:'Embudo', gauge:'Medidor',
+  card:'Tarjeta', multiRowCard:'Tarjeta de varias filas', kpi:'KPI',
+  slicer:'Segmentador (filtro)', tableEx:'Tabla', pivotTable:'Matriz',
+  map:'Mapa', filledMap:'Mapa coroplético', shapeMap:'Mapa de formas', azureMap:'Mapa Azure',
+  scatterChart:'Dispersión', waterfallChart:'Cascada', ribbonChart:'Cinta',
+  textbox:'Cuadro de texto', image:'Imagen', shape:'Forma', actionButton:'Botón',
+  decompositionTreeVisual:'Árbol de descomposición', keyDriversVisual:'Influenciadores clave'
+};
+
+function preparaDropzonePbix(){
+  const dz = document.getElementById('dropzonePbix');
+  const input = document.getElementById('inputFilePbix');
+  dz.addEventListener('click', () => input.click());
+  dz.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
+  });
+  input.addEventListener('change', () => procesarPbix(input.files[0]));
+  ['dragover','dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('dragover'); }));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('dragover'); }));
+  dz.addEventListener('drop', e => procesarPbix(e.dataTransfer.files[0]));
+}
+
+function errorPbix(txt){
+  const el = document.getElementById('errorPbix');
+  el.textContent = txt;
+  el.classList.add('show');
+}
+
+async function procesarPbix(file){
+  if (!file) return;
+  document.getElementById('errorPbix').classList.remove('show');
+  if (typeof JSZip === 'undefined'){
+    errorPbix('No se pudo cargar la librería de lectura (JSZip). Verifica tu conexión a internet.');
+    return;
+  }
+  try{
+    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+
+    // --- Layout del informe (JSON en UTF-16LE) ---
+    let layout = null;
+    const archivoLayout = zip.file('Report/Layout') || (zip.file(/Layout$/)[0] || null);
+    if (archivoLayout){
+      const bytes = await archivoLayout.async('uint8array');
+      try{ layout = JSON.parse(new TextDecoder('utf-16le').decode(bytes)); }
+      catch(e){ try{ layout = JSON.parse(new TextDecoder('utf-8').decode(bytes)); }catch(e2){} }
+    }
+
+    // --- Consultas M (DataMashup contiene un ZIP interno) ---
+    let consultasM = '';
+    const mashup = zip.file('DataMashup');
+    if (mashup){
+      const b = await mashup.async('uint8array');
+      for (let i = 0; i < b.length - 3; i++){
+        if (b[i] === 0x50 && b[i+1] === 0x4B && b[i+2] === 0x03 && b[i+3] === 0x04){
+          try{
+            const interno = await JSZip.loadAsync(b.slice(i));
+            const seccion = interno.file(/Section1\.m$/i)[0];
+            if (seccion){ consultasM = await seccion.async('string'); }
+          }catch(e){}
+          break;
+        }
+      }
+    }
+
+    // --- Versión ---
+    let version = '';
+    const vFile = zip.file('Version');
+    if (vFile){
+      const vb = await vFile.async('uint8array');
+      version = new TextDecoder('utf-16le').decode(vb).replace(/\0/g,'').trim();
+    }
+
+    // ¿Está corriendo el servidor local de lectura completa?
+    let srv = await estadoServidorPbix();
+    if (srv.estado === 'ok'){
+      try{
+        const r = await fetch(urlServidorPbix + '/subir', {method:'POST', body:file});
+        const j = await r.json();
+        srv = r.ok ? Object.assign({estado:'ok'}, j)
+                   : {estado:'error', mensaje: j.error || 'Error del servidor local'};
+      }catch(e){ srv = {estado:'error', mensaje:'No se pudo enviar el archivo al servidor local.'}; }
+    }
+
+    mostrarInfoPbix(file.name, version, layout, consultasM, srv);
+  }catch(err){
+    errorPbix('No se pudo abrir el archivo: ' + (err.message || 'formato no reconocido') +
+      '. Si el .pbix tiene etiqueta de confidencialidad o cifrado, el navegador no puede leerlo.');
+  }
+}
+
+function camposDeVisual(cfg){
+  const campos = new Set();
+  const proy = cfg && cfg.singleVisual && cfg.singleVisual.projections;
+  if (proy){
+    for (const rol of Object.keys(proy)){
+      (proy[rol] || []).forEach(p => { if (p && p.queryRef) campos.add(p.queryRef); });
+    }
+  }
+  return [...campos];
+}
+
+function mostrarInfoPbix(nombreArchivo, version, layout, consultasM, srv){
+  const cont = document.getElementById('pbixInfo');
+  cont.innerHTML = '';
+  cont.style.display = 'flex';
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('btnNuevo').hidden = false;
+
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Radiografía del informe';
+  cont.appendChild(h2);
+
+  const paginas = (layout && layout.sections) || [];
+  let totalVisuales = 0;
+  paginas.forEach(p => totalVisuales += (p.visualContainers || []).length);
+
+  const resumen = document.createElement('p');
+  resumen.textContent = nombreArchivo + (version ? ' · versión ' + version : '') +
+    ' · ' + paginas.length + ' página(s) · ' + totalVisuales + ' visual(es)';
+  cont.appendChild(resumen);
+
+  /* ----- Datos del modelo (vía servidor local) ----- */
+  srv = srv || {estado:'sin-servidor'};
+  if (srv.estado === 'ok' && Array.isArray(srv.tablas) && srv.tablas.length){
+    const titulo = document.createElement('p');
+    titulo.innerHTML = '<strong>✔ Servidor local conectado.</strong> Elige la tabla del modelo para generar el dashboard con sus datos completos' +
+      (srv.medidas ? ' · ' + srv.medidas + ' medida(s) DAX en el modelo' : '') + ':';
+    titulo.style.fontSize = '14px';
+    cont.appendChild(titulo);
+
+    const listaTablas = document.createElement('div');
+    listaTablas.className = 'config-lista';
+    srv.tablas.forEach(nombreTabla => {
+      const fila = document.createElement('div');
+      fila.className = 'config-fila';
+      fila.innerHTML = '<div class="config-info"><div class="config-nombre"></div><div class="config-muestra"></div></div>';
+      fila.querySelector('.config-nombre').textContent = nombreTabla;
+      const cols = (srv.columnas && srv.columnas[nombreTabla]) || [];
+      fila.querySelector('.config-muestra').textContent = cols.length ? 'Columnas: ' + cols.join(', ') : '';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'primary btn-mini';
+      btn.textContent = 'Generar dashboard';
+      btn.addEventListener('click', () => cargarTablaPbix(srv.token, nombreTabla, btn));
+      fila.appendChild(btn);
+      listaTablas.appendChild(fila);
+    });
+    cont.appendChild(listaTablas);
+  } else {
+    const aviso = document.createElement('div');
+    aviso.className = 'srv-aviso';
+    if (srv.estado === 'error'){
+      aviso.innerHTML = '<strong>El servidor local respondió con un error:</strong> ' +
+        String(srv.mensaje || '').replace(/</g,'&lt;');
+    } else if (srv.estado === 'sin-pbixray'){
+      aviso.innerHTML = '<strong>El servidor local está corriendo, pero falta la librería de lectura.</strong> ' +
+        'Ejecuta esto en la misma terminal y vuelve a subir el archivo:' +
+        '<pre>pip install pbixray pandas</pre>';
+    } else {
+      aviso.innerHTML = '<strong>¿Quieres leer también los DATOS del modelo?</strong> ' +
+        'Los datos del .pbix van comprimidos con XPress9 (formato propietario de Microsoft) y el navegador no puede leerlos, ' +
+        'pero el servidor local incluido sí. Actívalo así:' +
+        '<pre>pip install pbixray pandas' + String.fromCharCode(10) + 'python servidor_pbix.py</pre>' +
+        'Deja esa ventana abierta y <strong>vuelve a subir el archivo .pbix</strong>: aparecerán las tablas del modelo listas para generar el dashboard. ' +
+        'El servidor corre solo en tu computador (127.0.0.1) y no envía nada a internet.';
+    }
+    cont.appendChild(aviso);
+  }
+
+  if (!paginas.length){
+    const aviso = document.createElement('p');
+    aviso.className = 'hint';
+    aviso.textContent = 'No se encontró la estructura del informe (Report/Layout). Puede ser un formato PBIX muy reciente o un archivo protegido.';
+    cont.appendChild(aviso);
+  }
+
+  const lista = document.createElement('div');
+  lista.className = 'config-lista';
+  paginas.forEach((pag, i) => {
+    const visuales = pag.visualContainers || [];
+    const filaPag = document.createElement('div');
+    filaPag.className = 'config-fila';
+    filaPag.style.background = 'var(--paper)';
+    filaPag.innerHTML = '<div class="config-info"><div class="config-nombre"></div><div class="config-muestra"></div></div>';
+    filaPag.querySelector('.config-nombre').textContent = 'Página ' + (i+1) + ': ' + (pag.displayName || pag.name || 'Sin nombre');
+    filaPag.querySelector('.config-muestra').textContent = visuales.length + ' visual(es)';
+    lista.appendChild(filaPag);
+
+    visuales.forEach(v => {
+      let cfg = null;
+      try{ cfg = JSON.parse(v.config || '{}'); }catch(e){}
+      const tipo = (cfg && cfg.singleVisual && cfg.singleVisual.visualType) || 'desconocido';
+      const campos = camposDeVisual(cfg);
+      const fila = document.createElement('div');
+      fila.className = 'config-fila';
+      fila.innerHTML = '<div class="config-info"><div class="config-nombre"></div><div class="config-muestra"></div></div>';
+      fila.querySelector('.config-nombre').textContent = '• ' + (NOMBRES_VISUAL[tipo] || tipo);
+      fila.querySelector('.config-muestra').textContent = campos.length ? 'Campos: ' + campos.join(', ') : '';
+      lista.appendChild(fila);
+    });
+  });
+  if (paginas.length) cont.appendChild(lista);
+
+  if (consultasM){
+    const det = document.createElement('details');
+    det.style.width = '100%';
+    const sum = document.createElement('summary');
+    sum.textContent = 'Consultas de origen de datos (código M de Power Query)';
+    sum.style.cursor = 'pointer';
+    sum.style.fontWeight = '600';
+    sum.style.fontSize = '13.5px';
+    const pre = document.createElement('pre');
+    pre.textContent = consultasM;
+    pre.style.cssText = 'margin-top:10px;padding:14px;background:var(--paper);border:1px solid var(--line);border-radius:9px;font-size:11.5px;overflow:auto;max-height:300px;white-space:pre-wrap;';
+    det.appendChild(sum); det.appendChild(pre);
+    cont.appendChild(det);
+  }
+
+  const nota = document.createElement('p');
+  nota.className = 'hint';
+  nota.innerHTML = 'Los <strong>datos del modelo</strong> están comprimidos en un formato propietario de Microsoft (XPress9) que el navegador no puede descomprimir. ' +
+    'Para graficarlos aquí: abre el informe en Power BI, exporta la tabla a CSV/Excel y usa la pestaña <strong>Subir datos</strong>.';
+  cont.appendChild(nota);
+}
+
 /* ---------------- Carga de archivo ---------------- */
 
 const dz = document.getElementById('dropzone');
@@ -572,7 +952,7 @@ function procesarArchivo(file){
     lector.onerror = () => mostrarError('No se pudo leer el archivo. Inténtalo de nuevo.');
     lector.readAsArrayBuffer(file);
   } else if (nombre.endsWith('.pbix')){
-    mostrarError('Los archivos .pbix no se pueden procesar en el navegador. Exporta tus datos desde Power BI a CSV o Excel y súbelos aquí.');
+    mostrarError('Para archivos .pbix usa la pestaña "Leer .pbix": muestra la estructura del informe. Para graficar los datos, exporta desde Power BI a CSV/Excel.');
   } else {
     mostrarError('Formato no compatible. Sube un archivo CSV, XLSX o XLS.');
   }
@@ -602,26 +982,106 @@ function aFecha(v){
   if (v instanceof Date) return isNaN(v) ? null : v;
   const s = String(v).trim();
   if (/^-?\d+([.,]\d+)?$/.test(s)) return null; // números puros no son fechas
-  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/); // dd/mm/aaaa
-  if (m) return new Date(+m[3], +m[2]-1, +m[1]);
+  const valida = d => {
+    if (isNaN(d)) return null;
+    const a = d.getFullYear();
+    return (a >= 1900 && a <= 2100) ? d : null; // descarta años absurdos
+  };
+  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/); // dd/mm/aaaa o dd/mm/aa
+  if (m){ let a = +m[3]; if (a < 100) a += 2000; return valida(new Date(a, +m[2]-1, +m[1])); }
   m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/); // aaaa-mm-dd
-  if (m) return new Date(+m[1], +m[2]-1, +m[3]);
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
+  if (m) return valida(new Date(+m[1], +m[2]-1, +m[3]));
+  // El parser nativo es muy permisivo (acepta cosas como "FAC-1001"):
+  // solo se usa si el texto contiene un nombre de mes reconocible
+  if (!/\d/.test(s)) return null;
+  if (!/(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic|jan|apr|aug|dec)/i.test(s)) return null;
+  return valida(new Date(s));
 }
+
+/* ---------------- Tipos de columna ----------------
+   categoria  → agrupa en gráficos y filtros
+   booleano   → Sí/No; agrupa como categoría
+   numero     → medida (suma/promedio)
+   moneda     → medida, se muestra con $
+   porcentaje → medida, se muestra con %
+   fecha      → eje de tiempo
+   texto      → texto libre; solo en la tabla
+   enlace     → URL; clickeable en la tabla
+   id         → código único; solo en la tabla
+   ignorar    → se excluye del dashboard            */
+
+const TIPOS_DIM    = ['categoria','booleano'];
+const TIPOS_MEDIDA = ['numero','moneda','porcentaje'];
+const ETIQUETA_TIPO = {
+  categoria:'Categoría', booleano:'Booleano (Sí/No)', numero:'Número',
+  moneda:'Moneda', porcentaje:'Porcentaje', fecha:'Fecha',
+  texto:'Texto libre', enlace:'Enlace (URL)', id:'ID / Código', ignorar:'Ignorar'
+};
+
+const RE_ENLACE = /^(https?:\/\/|www\.)/i;
+const SET_BOOL = new Set(['sí','si','no','true','false','verdadero','falso','yes','y','n','1','0','x']);
 
 function detectarColumnas(filas){
   const nombres = Object.keys(filas[0] || {}).filter(n => n && !n.startsWith('__EMPTY'));
+  const total = filas.length;
+
   return nombres.map(nombre => {
-    const muestra = filas.slice(0, 200).map(f => f[nombre]).filter(v => v !== '' && v != null);
+    const muestra = filas.slice(0, 300).map(f => f[nombre]).filter(v => v !== '' && v != null);
     if (!muestra.length) return {nombre, tipo:'categoria'};
-    const numeros = muestra.filter(v => aNumero(v) !== null).length;
-    const fechas  = muestra.filter(v => aFecha(v)  !== null).length;
-    let tipo = 'categoria';
-    if (fechas / muestra.length >= 0.8 && numeros / muestra.length < 0.8) tipo = 'fecha';
-    else if (numeros / muestra.length >= 0.8) tipo = 'numero';
-    return {nombre, tipo};
+
+    const textos = muestra.map(v => String(v).trim());
+    const prop = fn => muestra.filter(fn).length / muestra.length;
+
+    // Enlaces
+    if (prop(v => RE_ENLACE.test(String(v).trim())) >= 0.8) return {nombre, tipo:'enlace'};
+
+    const pNum = prop(v => aNumero(v) !== null);
+    const pFec = prop(v => aFecha(v) !== null);
+
+    // Fechas
+    if (pFec >= 0.8 && pNum < 0.8) return {nombre, tipo:'fecha'};
+
+    const unicos = new Set(textos.map(t => t.toLowerCase()));
+    const ratioUnicos = new Set(filas.map(f => String(f[nombre] ?? '').trim()).values()).size / Math.max(total,1);
+
+    // Numéricos y sus subtipos
+    if (pNum >= 0.8){
+      if (prop(v => String(v).includes('%')) >= 0.6) return {nombre, tipo:'porcentaje'};
+      if (prop(v => /[$€£]/.test(String(v))) >= 0.6) return {nombre, tipo:'moneda'};
+      // ID numérico: únicos + (el nombre sugiere código, o son números largos tipo cédula/NIT)
+      const enteros = prop(v => { const n = aNumero(v); return n !== null && Number.isInteger(n); });
+      const digitosLargos = prop(v => { const n = aNumero(v); return n !== null && String(Math.abs(n)).length >= 6; });
+      const nombreDeId = /(^|[^a-záéíóú])(id|cod|c[oó]d(igo)?|nit|c[eé]dula|dni|ref(erencia)?|folio|factura|documento|placa|serial|sku|tel[eé]fono|celular)([^a-záéíóú]|$)/i.test(nombre);
+      if (total >= 20 && ratioUnicos >= 0.97 && enteros >= 0.95 && (nombreDeId || digitosLargos >= 0.8))
+        return {nombre, tipo:'id'};
+      return {nombre, tipo:'numero'};
+    }
+
+    // Booleanos: máximo 2 valores distintos dentro del conjunto Sí/No
+    if (unicos.size <= 2 && [...unicos].every(u => SET_BOOL.has(u))) return {nombre, tipo:'booleano'};
+
+    // Códigos alfanuméricos únicos → ID
+    const lenProm = textos.reduce((a,t) => a + t.length, 0) / textos.length;
+    if (total >= 20 && ratioUnicos >= 0.97 && lenProm <= 24) return {nombre, tipo:'id'};
+
+    // Texto libre: valores largos o casi todos distintos (nombres, descripciones)
+    if (lenProm > 40 || (total >= 30 && ratioUnicos > 0.6)) return {nombre, tipo:'texto'};
+
+    return {nombre, tipo:'categoria'};
   });
+}
+
+function tipoDe(nombreCol){
+  const c = columnas.find(c => c.nombre === nombreCol);
+  return c ? c.tipo : 'categoria';
+}
+
+function fmtMedida(n, medida){
+  if (medida === MEDIDA_CONTEO) return fmt(n);
+  const t = tipoDe(medida);
+  if (t === 'moneda') return '$' + fmt(n);
+  if (t === 'porcentaje') return fmt(n) + '%';
+  return fmt(n);
 }
 
 /* ---------------- Construcción del dashboard ---------------- */
@@ -632,31 +1092,126 @@ function iniciarDashboard(filas){
     mostrarError('El archivo no tiene suficientes filas de datos. Se necesita al menos una fila de encabezados y dos de datos.');
     return;
   }
-  datos = filas;
-  columnas = detectarColumnas(filas);
+  datosCrudos = filas;
+  abrirConfiguracion(detectarColumnas(filas));
+}
 
-  if (!columnas.some(c => c.tipo === 'numero')){
-    mostrarError('No se detectaron columnas numéricas. Para generar gráficos se necesita al menos una columna con valores numéricos (ventas, cantidades, montos, etc.).');
+/* ---------------- Revisión de columnas (paso intermedio) ----------------
+   Cada archivo trae campos distintos; aquí la persona confirma o corrige
+   qué es cada columna antes de generar el dashboard.                     */
+
+function muestraDeColumna(nombre){
+  const vals = [];
+  for (const f of datosCrudos){
+    const v = f[nombre];
+    if (v !== '' && v != null){
+      const t = formatoCelda(v);
+      if (!vals.includes(t)) vals.push(t);
+      if (vals.length >= 3) break;
+    }
+  }
+  return vals.join(' · ') || '(vacía)';
+}
+
+function abrirConfiguracion(deteccion){
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('dashboard').classList.remove('active');
+  document.getElementById('pbixInfo').style.display = 'none';
+  document.getElementById('btnNuevo').hidden = false;
+  document.getElementById('btnImprimir').hidden = true;
+  document.getElementById('btnColumnas').hidden = true;
+
+  const cont = document.getElementById('configCols');
+  cont.style.display = 'flex';
+  cont.innerHTML = `
+    <h2>Revisa tus columnas</h2>
+    <p>Detectamos automáticamente el tipo de cada campo. Corrige lo que haga falta:
+       los tipos de <strong>agrupar</strong> alimentan gráficos y filtros, los de <strong>medir</strong> se suman o promedian
+       (Moneda se muestra con $ y Porcentaje con %), <strong>Fecha</strong> crea la línea de tiempo,
+       y Texto, Enlace e ID aparecen solo en la tabla.</p>
+    <div class="config-lista" id="configLista"></div>
+    <button class="primary" type="button" onclick="generarDesdeConfig()">Generar dashboard</button>`;
+
+  const lista = document.getElementById('configLista');
+  deteccion.forEach((col, i) => {
+    const fila = document.createElement('div');
+    fila.className = 'config-fila';
+    fila.innerHTML = `
+      <div class="config-info">
+        <div class="config-nombre"></div>
+        <div class="config-muestra"></div>
+      </div>
+      <select data-col="" aria-label="Tipo de columna">
+        <optgroup label="Para agrupar y filtrar">
+          <option value="categoria">Categoría</option>
+          <option value="booleano">Booleano (Sí/No)</option>
+        </optgroup>
+        <optgroup label="Para medir">
+          <option value="numero">Número</option>
+          <option value="moneda">Moneda</option>
+          <option value="porcentaje">Porcentaje</option>
+        </optgroup>
+        <optgroup label="Tiempo">
+          <option value="fecha">Fecha</option>
+        </optgroup>
+        <optgroup label="Solo en la tabla">
+          <option value="texto">Texto libre</option>
+          <option value="enlace">Enlace (URL)</option>
+          <option value="id">ID / Código</option>
+        </optgroup>
+        <option value="ignorar">Ignorar</option>
+      </select>`;
+    fila.querySelector('.config-nombre').textContent = col.nombre;
+    fila.querySelector('.config-muestra').textContent = 'Ejemplos: ' + muestraDeColumna(col.nombre);
+    const sel = fila.querySelector('select');
+    sel.dataset.col = col.nombre;
+    sel.value = col.tipo;
+    lista.appendChild(fila);
+  });
+}
+
+function generarDesdeConfig(){
+  const elegidas = [];
+  document.querySelectorAll('#configLista select').forEach(sel => {
+    if (sel.value !== 'ignorar') elegidas.push({nombre: sel.dataset.col, tipo: sel.value});
+  });
+  if (!elegidas.length){
+    alert('Debes dejar al menos una columna activa (no todas en "Ignorar").');
     return;
   }
-
+  datos = datosCrudos;
+  columnas = elegidas;
   filtrosActivos = {};
-  document.getElementById('setup').style.display = 'none';
+
+  document.getElementById('configCols').style.display = 'none';
   document.getElementById('dashboard').classList.add('active');
-  document.getElementById('btnNuevo').hidden = false;
   document.getElementById('btnImprimir').hidden = false;
+  document.getElementById('btnColumnas').hidden = false;
 
   construirFiltros();
   construirSelectoresYGraficos();
   refrescarTodo();
 }
 
+function reabrirConfiguracion(){
+  // Vuelve al panel de columnas conservando el archivo cargado
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+  abrirConfiguracion(columnas.concat(
+    // reincorporar las ignoradas con su detección original
+    detectarColumnas(datosCrudos).filter(d => !columnas.some(c => c.nombre === d.nombre))
+  ));
+}
+
 function volverACarga(){
   Object.values(charts).forEach(c => c.destroy());
   charts = {};
-  datos = []; columnas = []; filtrosActivos = {}; hojaUsada = '';
+  datos = []; datosCrudos = []; columnas = []; filtrosActivos = {}; hojaUsada = '';
   inputFile.value = '';
   document.getElementById('dashboard').classList.remove('active');
+  document.getElementById('configCols').style.display = 'none';
+  document.getElementById('pbixInfo').style.display = 'none';
+  document.getElementById('btnColumnas').hidden = true;
   const visor = document.getElementById('visorPbi');
   visor.classList.remove('active');
   visor.innerHTML = '';
@@ -683,7 +1238,7 @@ function valoresUnicos(col){
 function construirFiltros(){
   const cont = document.getElementById('filtros');
   cont.innerHTML = '';
-  const categoricas = columnas.filter(c => c.tipo === 'categoria');
+  const categoricas = columnas.filter(c => TIPOS_DIM.includes(c.tipo));
   let creados = 0;
 
   for (const col of categoricas){
@@ -728,32 +1283,81 @@ function datosFiltrados(){
 
 /* ---------------- Agregaciones ---------------- */
 
+function pasoBonito(bruto){
+  // Redondea el tamaño de rango a un valor "bonito" (1, 2, 5 × potencia de 10)
+  const p = Math.pow(10, Math.floor(Math.log10(bruto)));
+  const r = bruto / p;
+  return (r <= 1 ? 1 : r <= 2 ? 2 : r <= 5 ? 5 : 10) * p;
+}
+
 function agregar(filas, dimension, medida, operacion, esFecha){
+  const esConteoFilas = (medida === MEDIDA_CONTEO);
+  const tDim = tipoDe(dimension);
+  const porFecha  = esFecha || tDim === 'fecha';
+  // Dimensión numérica → rangos automáticos (edades, montos...) para que el gráfico tenga sentido
+  const porRangos = !porFecha && TIPOS_MEDIDA.includes(tDim);
+
+  let bins = null, binStep = 0, binStart = 0;
+  if (porRangos){
+    let min = Infinity, max = -Infinity, hay = false;
+    for (const f of filas){
+      const n = aNumero(f[dimension]);
+      if (n !== null){ hay = true; if (n < min) min = n; if (n > max) max = n; }
+    }
+    if (hay){
+      if (min === max){
+        bins = [{suma:0, n:0, label: fmt(min)}]; binStep = 1; binStart = min;
+      } else {
+        binStep  = pasoBonito((max - min) / 7);
+        binStart = Math.floor(min / binStep) * binStep;
+        const cant = Math.min(12, Math.max(1, Math.ceil((max - binStart) / binStep + 1e-9)));
+        bins = [];
+        for (let i = 0; i < cant; i++){
+          const a = binStart + i * binStep;
+          bins.push({suma:0, n:0, label: fmt(a) + ' – ' + fmt(a + binStep)});
+        }
+      }
+    }
+  }
+
   const grupos = new Map();
+  const obtener = clave => {
+    if (!grupos.has(clave)) grupos.set(clave, {suma:0, n:0});
+    return grupos.get(clave);
+  };
+
   for (const f of filas){
-    let clave;
-    if (esFecha){
+    let g;
+    if (porRangos){
+      if (!bins) break;
+      const n = aNumero(f[dimension]);
+      if (n === null) continue;
+      const idx = Math.max(0, Math.min(bins.length - 1, Math.floor((n - binStart) / binStep)));
+      g = bins[idx];
+    } else if (porFecha){
       const d = aFecha(f[dimension]);
       if (!d) continue;
-      clave = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      g = obtener(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'));
     } else {
-      clave = String(f[dimension] ?? '').trim();
+      const clave = formatoCelda(f[dimension]).trim();
       if (!clave) continue;
+      g = obtener(clave);
     }
-    if (!grupos.has(clave)) grupos.set(clave, {suma:0, n:0});
-    const g = grupos.get(clave);
+    if (esConteoFilas){ g.n++; continue; }
     const v = aNumero(f[medida]);
     if (v !== null){ g.suma += v; g.n++; }
     else if (operacion === 'conteo'){ g.n++; }
   }
-  const resultado = [...grupos.entries()].map(([clave, g]) => {
-    let valor = 0;
-    if (operacion === 'suma') valor = g.suma;
-    else if (operacion === 'promedio') valor = g.n ? g.suma / g.n : 0;
-    else valor = g.n;
-    return {clave, valor};
-  });
-  if (esFecha) resultado.sort((a,b) => a.clave.localeCompare(b.clave));
+
+  const valorDe = g =>
+    (esConteoFilas || operacion === 'conteo') ? g.n
+    : operacion === 'suma' ? g.suma
+    : (g.n ? g.suma / g.n : 0);
+
+  if (porRangos) return (bins || []).map(b => ({clave: b.label, valor: valorDe(b)}));
+
+  const resultado = [...grupos.entries()].map(([clave, g]) => ({clave, valor: valorDe(g)}));
+  if (porFecha) resultado.sort((a,b) => a.clave.localeCompare(b.clave));
   else resultado.sort((a,b) => b.valor - a.valor);
   return resultado;
 }
@@ -769,7 +1373,6 @@ function fmt(n){
 function construirKpis(filas){
   const cont = document.getElementById('kpis');
   cont.innerHTML = '';
-  const numericas = columnas.filter(c => c.tipo === 'numero').slice(0, 3);
 
   const agregarKpi = (label, valor, sub) => {
     const div = document.createElement('div');
@@ -783,13 +1386,34 @@ function construirKpis(filas){
 
   agregarKpi('Registros', filas.length.toLocaleString('es-CO'), 'filas después de filtros');
 
-  for (const col of numericas){
-    let suma = 0, n = 0;
-    for (const f of filas){
-      const v = aNumero(f[col.nombre]);
-      if (v !== null){ suma += v; n++; }
+  const medidas = columnas.filter(c => TIPOS_MEDIDA.includes(c.tipo)).slice(0, 3);
+
+  if (medidas.length){
+    for (const col of medidas){
+      let suma = 0, n = 0;
+      for (const f of filas){
+        const v = aNumero(f[col.nombre]);
+        if (v !== null){ suma += v; n++; }
+      }
+      if (col.tipo === 'porcentaje'){
+        // Para porcentajes el total no tiene sentido; se muestra el promedio
+        agregarKpi('Promedio · ' + col.nombre, n ? fmtMedida(suma/n, col.nombre) : '—', n + ' valores');
+      } else {
+        agregarKpi('Total · ' + col.nombre, fmtMedida(suma, col.nombre),
+          n ? 'promedio: ' + fmtMedida(suma/n, col.nombre) : '');
+      }
     }
-    agregarKpi('Total · ' + col.nombre, fmt(suma), n ? 'promedio: ' + fmt(suma/n) : '');
+  } else {
+    // Sin medidas: mostrar valores distintos de las primeras dimensiones
+    const dims = columnas.filter(c => TIPOS_DIM.includes(c.tipo)).slice(0, 3);
+    for (const col of dims){
+      const unicos = new Set();
+      for (const f of filas){
+        const v = formatoCelda(f[col.nombre]).trim();
+        if (v) unicos.add(v);
+      }
+      agregarKpi('Distintos · ' + col.nombre, unicos.size.toLocaleString('es-CO'), 'valores únicos');
+    }
   }
 }
 
@@ -808,15 +1432,31 @@ function opcionesSelect(sel, items, valorInicial){
 function construirSelectoresYGraficos(){
   const cont = document.getElementById('graficos');
   cont.innerHTML = '';
-  const categoricas = columnas.filter(c => c.tipo === 'categoria').map(c => c.nombre);
-  const numericas   = columnas.filter(c => c.tipo === 'numero').map(c => c.nombre);
+  const categoricas = columnas.filter(c => TIPOS_DIM.includes(c.tipo)).map(c => c.nombre);
+  const numericas   = columnas.filter(c => TIPOS_MEDIDA.includes(c.tipo)).map(c => c.nombre);
   const fechas      = columnas.filter(c => c.tipo === 'fecha').map(c => c.nombre);
+  const otras       = columnas.filter(c => ['texto','id'].includes(c.tipo)).map(c => c.nombre);
+  // Dimensión universal: se puede agrupar por CUALQUIER columna activa.
+  // Orden por utilidad: categorías → fechas (por mes) → numéricas (por rangos) → texto/ID (por valor)
+  const dimsTodas = [...categoricas, ...fechas, ...numericas, ...otras];
+  // El conteo de filas siempre está disponible: sirve aunque no haya columnas numéricas
+  const medidas = [...numericas, MEDIDA_CONTEO];
+  const medidaInicial = numericas.length ? numericas[0] : MEDIDA_CONTEO;
 
   const defs = [];
-  if (categoricas.length) defs.push({id:'barras',  titulo:'Comparación por categoría', tipo:'bar',      dims:categoricas});
-  if (fechas.length)      defs.push({id:'linea',   titulo:'Evolución en el tiempo',    tipo:'line',     dims:fechas, esFecha:true});
-  if (categoricas.length) defs.push({id:'dona',    titulo:'Distribución',              tipo:'doughnut', dims:categoricas});
-  if (numericas.length>1) defs.push({id:'barras2', titulo:'Segunda comparación',       tipo:'bar',      dims:categoricas.length?categoricas:fechas, medidaIdx:1});
+  if (dimsTodas.length) defs.push({id:'barras',  titulo:'Comparación por categoría', tipo:'bar',      dims:dimsTodas});
+  if (fechas.length)    defs.push({id:'linea',   titulo:'Evolución en el tiempo',    tipo:'line',     dims:fechas, esFecha:true});
+  if (dimsTodas.length) defs.push({id:'dona',    titulo:'Distribución',              tipo:'doughnut', dims:dimsTodas});
+  if (dimsTodas.length && medidas.length > 1)
+    defs.push({id:'barras2', titulo:'Segunda comparación', tipo:'bar', dims:dimsTodas, medidaIdx:1});
+
+  if (!defs.length){
+    cont.innerHTML = '<div class="grafico-card"><p style="margin:auto;color:var(--muted);font-size:13.5px;text-align:center;max-width:420px;">' +
+      'No hay columnas activas para graficar. ' +
+      'Usa el botón "Columnas" para activar al menos un campo.</p></div>';
+    window.__defs = [];
+    return;
+  }
 
   defs.forEach((def, i) => {
     const card = document.createElement('div');
@@ -836,9 +1476,19 @@ function construirSelectoresYGraficos(){
     const selOp  = card.querySelector('[data-rol="op"]');
 
     opcionesSelect(selDim, def.dims, def.dims[Math.min(i, def.dims.length-1)]);
-    opcionesSelect(selMed, numericas, numericas[def.medidaIdx && numericas[def.medidaIdx] ? def.medidaIdx : 0]);
+    const medDef = (def.medidaIdx != null && medidas[def.medidaIdx]) ? medidas[def.medidaIdx] : medidaInicial;
+    opcionesSelect(selMed, medidas, medDef);
+
+    // Con la medida "Conteo de filas", la operación queda fija en Conteo (visible pero bloqueada)
+    const ajustarOp = () => {
+      const esConteo = (selMed.value === MEDIDA_CONTEO);
+      selOp.disabled = esConteo;
+      if (esConteo) selOp.value = 'conteo';
+    };
+    ajustarOp();
 
     def.selDim = selDim; def.selMed = selMed; def.selOp = selOp;
+    selMed.addEventListener('change', ajustarOp);
     [selDim, selMed, selOp].forEach(s => s.addEventListener('change', () => dibujarGrafico(def)));
 
     document.getElementById('graficos').appendChild(card);
@@ -854,6 +1504,21 @@ function dibujarGrafico(def){
   let serie = agregar(filas, dim, med, op, !!def.esFecha);
   if (!def.esFecha) serie = serie.slice(0, def.tipo === 'doughnut' ? 8 : 15);
 
+  const canvas = document.getElementById('canvas_' + def.id);
+  const cuerpo = canvas && canvas.parentElement;
+  let aviso = cuerpo ? cuerpo.querySelector('.grafico-vacio') : null;
+
+  if (!serie.length){
+    if (charts[def.id]){ charts[def.id].destroy(); delete charts[def.id]; }
+    if (cuerpo){
+      if (!aviso){ aviso = document.createElement('p'); aviso.className = 'grafico-vacio'; cuerpo.appendChild(aviso); }
+      aviso.textContent = 'Sin datos para "' + dim + '" con los filtros actuales. ' +
+        'Revisa que la columna tenga valores o elige otra dimensión.';
+    }
+    return;
+  }
+  if (aviso) aviso.remove();
+
   const labels = serie.map(s => s.clave);
   const valores = serie.map(s => s.valor);
   const colores = def.tipo === 'doughnut'
@@ -866,7 +1531,9 @@ function dibujarGrafico(def){
     data: {
       labels,
       datasets: [{
-        label: (op === 'conteo' ? 'Conteo' : (op === 'promedio' ? 'Promedio de ' : 'Suma de ') + med),
+        label: (med === MEDIDA_CONTEO ? 'Conteo de filas'
+               : op === 'conteo' ? 'Conteo de ' + med
+               : (op === 'promedio' ? 'Promedio de ' : 'Suma de ') + med),
         data: valores,
         backgroundColor: def.tipo === 'line' ? 'rgba(242,200,17,.18)' : colores,
         borderColor: def.tipo === 'line' ? '#8a6d00' : (def.tipo === 'doughnut' ? '#ffffff' : '#c9a50a'),
@@ -880,11 +1547,11 @@ function dibujarGrafico(def){
       responsive:true, maintainAspectRatio:false,
       plugins:{
         legend:{ display: def.tipo === 'doughnut', position:'right', labels:{boxWidth:12, font:{size:11}} },
-        tooltip:{ callbacks:{ label: ctx => ' ' + fmt(ctx.parsed.y ?? ctx.parsed) } }
+        tooltip:{ callbacks:{ label: ctx => ' ' + fmtMedida(ctx.parsed.y ?? ctx.parsed, med) } }
       },
       scales: def.tipo === 'doughnut' ? {} : {
         x:{ ticks:{ font:{size:10.5}, maxRotation:45, autoSkip:true } },
-        y:{ ticks:{ font:{size:10.5}, callback: v => fmt(v) }, beginAtZero:true }
+        y:{ ticks:{ font:{size:10.5}, callback: v => fmtMedida(v, med) }, beginAtZero:true }
       }
     }
   });
@@ -912,7 +1579,26 @@ function construirTabla(filas){
   const trs = tabla.querySelectorAll('tbody tr');
   visibles.forEach((f, r) => {
     const tds = trs[r].querySelectorAll('td');
-    nombres.forEach((n, c) => tds[c].textContent = formatoCelda(f[n]));
+    nombres.forEach((n, c) => {
+      const v = f[n];
+      const t = tipoDe(n);
+      if (t === 'enlace' && v){
+        let href = String(v).trim();
+        if (/^www\./i.test(href)) href = 'https://' + href;
+        if (/^https?:\/\//i.test(href)){
+          const a = document.createElement('a');
+          a.href = href; a.target = '_blank'; a.rel = 'noopener';
+          a.textContent = String(v);
+          tds[c].appendChild(a);
+          return;
+        }
+      }
+      if ((t === 'moneda' || t === 'porcentaje')){
+        const num = aNumero(v);
+        if (num !== null){ tds[c].textContent = fmtMedida(num, n); return; }
+      }
+      tds[c].textContent = formatoCelda(v);
+    });
   });
 
   document.getElementById('tablaNota').textContent =
