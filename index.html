@@ -223,6 +223,17 @@
     overflow:auto;
   }
 
+  #informePbix{ display:none; flex-direction:column; gap:16px; }
+  #informePbix.active{ display:flex; }
+  .informe-cabecera{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:12px 18px; font-size:13px; color:var(--muted); line-height:1.6;
+  }
+  .informe-pagina{
+    font-size:15px; font-weight:600; color:var(--ink);
+    margin:4px 2px 0;
+  }
+
   /* Visor de Power BI embebido */
   #visorPbi{
     display:none;
@@ -449,6 +460,9 @@
   <!-- Visor de Power BI embebido -->
   <section id="visorPbi"></section>
 
+  <!-- Informe reconstruido desde el .pbix -->
+  <section id="informePbix"></section>
+
   <!-- Dashboard generado -->
   <section id="dashboard">
     <div class="filtros" id="filtros"></div>
@@ -469,7 +483,7 @@
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
   <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
-  <span>v4.2</span>
+  <span>v5.1</span>
 </footer>
 
 <script>
@@ -862,6 +876,407 @@ async function generarUnificadoPbix(srv, boton){
   }
 }
 
+/* ============ Reconstrucción del informe original del .pbix ============
+   Usa el diseño (Report/Layout), las relaciones del modelo y las medidas
+   DAX simples para recrear en la web el dashboard tal como fue diseñado. */
+
+let __informe = null;         // {filas, cols, slicers, kpis, charts, tablas, omitidos}
+let filtrosInforme = {};
+let chartsInforme = {};
+
+function dividirRef(ref){
+  const i = ref.indexOf('.');
+  return i < 0 ? [ref, ''] : [ref.slice(0, i), ref.slice(i + 1)];
+}
+
+function parsearAgregacionRef(ref){
+  const m = String(ref).match(/^(Sum|Avg|Average|Min|Max|Count|CountNonNull|CountDistinct)\((.+)\)$/i);
+  if (!m) return null;
+  const mapa = {sum:'suma', avg:'promedio', average:'promedio', min:'min', max:'max',
+                count:'conteo', countnonnull:'conteo', countdistinct:'distinct'};
+  return {agg: mapa[m[1].toLowerCase()] || 'suma', ref: m[2]};
+}
+
+function parsearDax(expr){
+  if (!expr) return null;
+  let e = String(expr).trim().replace(/\s+/g, ' ');
+  // Desenvolver CALCULATE(x, ...) → x (primer argumento de nivel superior)
+  for (let i = 0; i < 3; i++){
+    const c = e.match(/^CALCULATE\s*\((.*)\)$/i);
+    if (!c) break;
+    let nivel = 0, corte = c[1].length;
+    for (let k = 0; k < c[1].length; k++){
+      const ch = c[1][k];
+      if (ch === '(') nivel++;
+      else if (ch === ')') nivel--;
+      else if (ch === ',' && nivel === 0){ corte = k; break; }
+    }
+    e = c[1].slice(0, corte).trim();
+  }
+  const col = "\\(\\s*'?([^'\\[]+?)'?\\s*\\[([^\\]]+)\\]\\s*\\)";
+  let m = e.match(new RegExp('^SUM' + col + '$', 'i'));
+  if (m) return {agg:'suma', tabla:m[1].trim(), col:m[2].trim()};
+  m = e.match(new RegExp('^AVERAGE' + col + '$', 'i'));
+  if (m) return {agg:'promedio', tabla:m[1].trim(), col:m[2].trim()};
+  m = e.match(new RegExp('^(MIN|MAX)' + col + '$', 'i'));
+  if (m) return {agg:m[1].toLowerCase(), tabla:m[2].trim(), col:m[3].trim()};
+  m = e.match(new RegExp('^DISTINCTCOUNT' + col + '$', 'i'));
+  if (m) return {agg:'distinct', tabla:m[1].trim(), col:m[2].trim()};
+  m = e.match(new RegExp('^(COUNTA?|COUNTNONBLANK)' + col + '$', 'i'));
+  if (m) return {agg:'conteo', tabla:m[2].trim(), col:m[3].trim()};
+  m = e.match(/^COUNTROWS\s*\(\s*'?([^')]+?)'?\s*\)$/i);
+  if (m) return {agg:'filas', tabla:m[1].trim(), col:''};
+  return null;
+}
+
+/* Une las tablas del modelo siguiendo las relaciones → una tabla plana
+   con columnas "Tabla.Columna", partiendo de la tabla de hechos (la mayor). */
+function construirTablaPlana(tablas, relaciones){
+  const nombres = Object.keys(tablas).filter(n => tablas[n] && tablas[n].length);
+  if (!nombres.length) return {filas: [], cols: new Set()};
+  const hecho = nombres.reduce((a, b) => tablas[b].length > tablas[a].length ? b : a);
+  const filas = tablas[hecho].map(f => {
+    const g = {};
+    for (const k of Object.keys(f)) g[hecho + '.' + k] = f[k];
+    return g;
+  });
+  const incluidas = new Set([hecho]);
+  let cambio = true;
+  while (cambio){
+    cambio = false;
+    for (const r of (relaciones || [])){
+      let interna, colInt, externa, colExt;
+      if (incluidas.has(r.deTabla) && !incluidas.has(r.aTabla) && tablas[r.aTabla]){
+        interna = r.deTabla; colInt = r.deCol; externa = r.aTabla; colExt = r.aCol;
+      } else if (incluidas.has(r.aTabla) && !incluidas.has(r.deTabla) && tablas[r.deTabla]){
+        interna = r.aTabla; colInt = r.aCol; externa = r.deTabla; colExt = r.deCol;
+      } else continue;
+      const indice = new Map();
+      for (const f of tablas[externa]) indice.set(String(f[colExt]), f);
+      for (const fila of filas){
+        const ext = indice.get(String(fila[interna + '.' + colInt]));
+        if (ext) for (const k of Object.keys(ext)) fila[externa + '.' + k] = ext[k];
+      }
+      incluidas.add(externa);
+      cambio = true;
+    }
+  }
+  const cols = new Set();
+  filas.slice(0, 80).forEach(f => Object.keys(f).forEach(k => cols.add(k)));
+  return {filas, cols};
+}
+
+function resolverRef(ref, medidas, cols){
+  const a = parsearAgregacionRef(ref);
+  let bruto = a ? a.ref : String(ref);
+
+  // Funciones de fecha del Layout: Year(Tabla.Col), Month(...), Quarter(...), Day(...)
+  let derivada = '';
+  const fp = bruto.match(/^(Year|Month|Quarter|Day)\((.+)\)$/i);
+  if (fp){
+    derivada = {year:'año', month:'mes', quarter:'trimestre', day:'día'}[fp[1].toLowerCase()];
+    bruto = fp[2];
+  }
+
+  const buscarCol = (nombre) => {
+    if (cols.has(nombre)) return nombre;
+    const bajo = String(nombre).toLowerCase();
+    for (const c of cols) if (c.toLowerCase() === bajo) return c;
+    return '';
+  };
+
+  let campo = buscarCol(bruto);
+
+  // Jerarquías tipo "Tabla.Fecha.Jerarquía de fechas.Mes": resolver por segmentos
+  if (!campo && bruto.includes('.')){
+    const partes = bruto.split('.');
+    const tabla = partes[0], ultimo = partes[partes.length - 1];
+    campo = buscarCol(tabla + '.' + ultimo);
+    if (!campo){
+      const sufijo = ('.' + ultimo).toLowerCase();
+      for (const c of cols) if (c.toLowerCase().endsWith(sufijo)){ campo = c; break; }
+    }
+    if (!campo && partes.length >= 2){
+      const base = buscarCol(tabla + '.' + partes[1]);
+      const mapaParte = {'año':'año','year':'año','mes':'mes','month':'mes',
+                         'trimestre':'trimestre','quarter':'trimestre','día':'día','dia':'día','day':'día'};
+      const parte = mapaParte[ultimo.toLowerCase()];
+      if (base && parte){ campo = base; derivada = derivada || parte; }
+    }
+  }
+
+  if (campo){
+    if (a) return {tipo:'medida', agg:a.agg, campo, etiqueta: ref};
+    const etiqueta = (derivada ? derivada.charAt(0).toUpperCase() + derivada.slice(1) + ' de ' : '') +
+                     (dividirRef(campo)[1] || campo);
+    return {tipo:'columna', campo, derivada: derivada || undefined, etiqueta};
+  }
+
+  // ¿Es una medida DAX del modelo? (se busca por nombre, sin importar su tabla)
+  const [, campoRef] = dividirRef(bruto);
+  const med = (medidas || []).find(m =>
+    m.nombre === campoRef || m.nombre === bruto ||
+    String(m.nombre).toLowerCase() === String(campoRef).toLowerCase());
+  if (med){
+    const p = parsearDax(med.dax);
+    if (p){
+      if (p.agg === 'filas'){
+        const c = [...cols].find(k => k.toLowerCase().startsWith(p.tabla.toLowerCase() + '.'));
+        if (c) return {tipo:'medida', agg:'conteo', campo:c, etiqueta:med.nombre};
+      } else {
+        const c = buscarCol(p.tabla + '.' + p.col);
+        if (c) return {tipo:'medida', agg:p.agg, campo:c, etiqueta:med.nombre};
+      }
+    }
+    return {tipo:'no-soportada', etiqueta:med.nombre};
+  }
+  return null;
+}
+
+function calcularMedidaInforme(filas, m){
+  if (m.agg === 'distinct'){
+    const set = new Set();
+    for (const f of filas){ const v = f[m.campo]; if (v !== '' && v != null) set.add(String(v)); }
+    return set.size;
+  }
+  let suma = 0, n = 0, mn = Infinity, mx = -Infinity;
+  for (const f of filas){
+    const v = aNumero(f[m.campo]);
+    if (v !== null){ suma += v; n++; if (v < mn) mn = v; if (v > mx) mx = v; }
+    else if (m.agg === 'conteo' && f[m.campo] !== '' && f[m.campo] != null){ n++; }
+  }
+  if (m.agg === 'promedio') return n ? suma / n : 0;
+  if (m.agg === 'conteo') return n;
+  if (m.agg === 'min') return n ? mn : 0;
+  if (m.agg === 'max') return n ? mx : 0;
+  return suma;
+}
+
+function claveDim(f, dim){
+  if (!dim.derivada) return formatoCelda(f[dim.campo]).trim();
+  const d = aFecha(f[dim.campo]);
+  if (!d) return '';
+  if (dim.derivada === 'año') return String(d.getFullYear());
+  if (dim.derivada === 'trimestre') return d.getFullYear() + ' · T' + (Math.floor(d.getMonth() / 3) + 1);
+  if (dim.derivada === 'mes') return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  if (dim.derivada === 'día') return d.toLocaleDateString('es-CO');
+  return formatoCelda(f[dim.campo]).trim();
+}
+
+function filasInforme(){
+  const claves = Object.keys(filtrosInforme);
+  if (!claves.length) return __informe.filas;
+  return __informe.filas.filter(f => claves.every(k => String(f[k]) === filtrosInforme[k]));
+}
+
+async function reconstruirInforme(srv, boton){
+  const txt = boton.textContent;
+  boton.disabled = true;
+  try{
+    const tablas = {};
+    for (let i = 0; i < srv.tablas.length; i++){
+      boton.textContent = 'Leyendo tablas ' + (i + 1) + '/' + srv.tablas.length + '…';
+      try{
+        const r = await fetch(urlServidorPbix + '/tabla?token=' + encodeURIComponent(srv.token) +
+                              '&nombre=' + encodeURIComponent(srv.tablas[i]));
+        const cuerpo = await r.json();
+        if (r.ok && Array.isArray(cuerpo) && cuerpo.length) tablas[srv.tablas[i]] = limpiarFilas(cuerpo);
+      }catch(e){}
+    }
+    boton.textContent = 'Cruzando y armando…';
+    const plana = construirTablaPlana(tablas, srv.relaciones || []);
+    if (!plana.filas.length) throw new Error('Las tablas del modelo no entregaron datos.');
+
+    const medidas = srv.medidas_detalle || [];
+    const slicers = [], kpis = [], charts = [], tablasV = [];
+    let omitidos = 0;
+    const paginas = (window.__layoutPbix && window.__layoutPbix.sections) || [];
+
+    paginas.forEach(pag => {
+      (pag.visualContainers || []).forEach(v => {
+        let cfg = null;
+        try{ cfg = JSON.parse(v.config || '{}'); }catch(e){}
+        const tipo = (cfg && cfg.singleVisual && cfg.singleVisual.visualType) || '';
+        if (!tipo || ['textbox','image','shape','actionButton'].includes(tipo)) return;
+        const refs = camposDeVisual(cfg).map(r => resolverRef(r, medidas, plana.cols)).filter(Boolean);
+        const colsV = refs.filter(r => r.tipo === 'columna');
+        const medsV = refs.filter(r => r.tipo === 'medida');
+        if (refs.some(r => r.tipo === 'no-soportada') && !medsV.length && !colsV.length){ omitidos++; return; }
+
+        if (tipo === 'slicer'){
+          if (colsV[0]) slicers.push(colsV[0]);
+          return;
+        }
+        if (['card','kpi','multiRowCard','gauge'].includes(tipo)){
+          medsV.forEach(m => kpis.push({...m, pagina: pag.displayName}));
+          if (!medsV.length && colsV[0]) kpis.push({tipo:'medida', agg:'distinct', campo:colsV[0].campo, etiqueta:'Distintos · ' + colsV[0].etiqueta});
+          return;
+        }
+        if (['tableEx','pivotTable'].includes(tipo)){
+          if (colsV.length || medsV.length) tablasV.push({cols: colsV, medidas: medsV, pagina: pag.displayName});
+          return;
+        }
+        // Gráficos
+        const dim = colsV[0];
+        const medida = medsV[0] || (dim ? {tipo:'medida', agg:'conteo', campo:dim.campo, etiqueta:'Conteo'} : null);
+        if (!dim || !medida){ omitidos++; return; }
+        let tipoJs = 'bar', horizontal = false;
+        const t = tipo.toLowerCase();
+        if (t.includes('pie') || t.includes('donut') || t.includes('treemap') || t.includes('funnel')) tipoJs = 'doughnut';
+        else if (t.includes('line') || t.includes('area')) tipoJs = 'line';
+        else if (t.includes('bar')) horizontal = true;
+        charts.push({tipoJs, horizontal, dim, medida, titulo: (NOMBRES_VISUAL[tipo] || tipo) + ' · ' + dim.etiqueta, pagina: pag.displayName});
+      });
+    });
+
+    __informe = {filas: plana.filas, cols: plana.cols, slicers, kpis, charts, tablas: tablasV, omitidos};
+    filtrosInforme = {};
+    hojaUsada = 'informe original';
+    huellaActual = huellaPbixBase ? huellaPbixBase + '::informe' : '';
+    montarInforme();
+  }catch(e){
+    alert('No se pudo reconstruir el informe: ' + (e.message || e));
+    boton.disabled = false; boton.textContent = txt;
+  }
+}
+
+function montarInforme(){
+  document.getElementById('pbixInfo').style.display = 'none';
+  document.getElementById('setup').style.display = 'none';
+  const cont = document.getElementById('informePbix');
+  cont.classList.add('active');
+  cont.innerHTML = '';
+  document.getElementById('btnNuevo').hidden = false;
+  document.getElementById('btnImprimir').hidden = false;
+  document.getElementById('btnColumnas').hidden = true;
+  document.getElementById('btnCompartir').hidden = true;
+
+  const cab = document.createElement('div');
+  cab.className = 'informe-cabecera';
+  cab.innerHTML = '<strong>Informe reconstruido desde el diseño original del .pbix</strong> · ' +
+    __informe.filas.length.toLocaleString('es-CO') + ' filas cruzadas' +
+    (__informe.omitidos ? ' · ' + __informe.omitidos + ' visual(es) omitido(s) por usar medidas DAX avanzadas' : '') +
+    '. Es una recreación aproximada: mismos campos y agregaciones, no los colores ni posiciones exactas.';
+  cont.appendChild(cab);
+
+  // Segmentadores (slicers)
+  if (__informe.slicers.length){
+    const filtros = document.createElement('div');
+    filtros.className = 'filtros';
+    const vistos = new Set();
+    __informe.slicers.forEach((sl, i) => {
+      if (sl.derivada || vistos.has(sl.campo)) return;
+      vistos.add(sl.campo);
+      const vals = [...new Set(__informe.filas.map(f => formatoCelda(f[sl.campo]).trim()).filter(Boolean))].sort();
+      if (!vals.length || vals.length > 80) return;
+      const div = document.createElement('div');
+      div.className = 'filtro';
+      div.innerHTML = '<label></label><select></select>';
+      div.querySelector('label').textContent = sl.etiqueta;
+      const sel = div.querySelector('select');
+      const op0 = document.createElement('option'); op0.value = ''; op0.textContent = 'Todas';
+      sel.appendChild(op0);
+      vals.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+      sel.addEventListener('change', () => {
+        if (sel.value === '') delete filtrosInforme[sl.campo];
+        else filtrosInforme[sl.campo] = sel.value;
+        pintarInforme();
+      });
+      filtros.appendChild(div);
+    });
+    cont.appendChild(filtros);
+  }
+
+  const kpisDiv = document.createElement('div'); kpisDiv.className = 'kpis'; kpisDiv.id = 'informeKpis';
+  cont.appendChild(kpisDiv);
+  const grafDiv = document.createElement('div'); grafDiv.className = 'graficos'; grafDiv.id = 'informeGraficos';
+  cont.appendChild(grafDiv);
+
+  __informe.charts.forEach((c, i) => {
+    const card = document.createElement('div');
+    card.className = 'grafico-card';
+    card.innerHTML = '<div class="grafico-head"><h3></h3></div><div class="grafico-body"><canvas id="informe_c' + i + '"></canvas></div>';
+    card.querySelector('h3').textContent = c.titulo;
+    grafDiv.appendChild(card);
+  });
+
+  __informe.tablas.forEach((t, i) => {
+    const card = document.createElement('div');
+    card.className = 'tabla-card';
+    card.innerHTML = '<h3>Tabla del informe</h3><div style="max-height:320px;overflow:auto;"><table id="informe_t' + i + '"></table></div>';
+    cont.appendChild(card);
+  });
+
+  pintarInforme();
+}
+
+function pintarInforme(){
+  const filas = filasInforme();
+
+  // KPIs
+  const kpisDiv = document.getElementById('informeKpis');
+  kpisDiv.innerHTML = '';
+  __informe.kpis.forEach(k => {
+    const d = document.createElement('div');
+    d.className = 'kpi';
+    d.innerHTML = '<div class="kpi-label"></div><div class="kpi-valor"></div>';
+    d.querySelector('.kpi-label').textContent = k.etiqueta;
+    d.querySelector('.kpi-valor').textContent = fmt(calcularMedidaInforme(filas, k));
+    kpisDiv.appendChild(d);
+  });
+
+  // Gráficos
+  __informe.charts.forEach((c, i) => {
+    const grupos = new Map();
+    for (const f of filas){
+      const clave = claveDim(f, c.dim);
+      if (!clave) continue;
+      if (!grupos.has(clave)) grupos.set(clave, []);
+      grupos.get(clave).push(f);
+    }
+    let serie = [...grupos.entries()].map(([clave, fs]) => ({clave, valor: calcularMedidaInforme(fs, c.medida)}));
+    const numerico = serie.length && serie.every(x => aNumero(x.clave) !== null);
+    if (c.tipoJs === 'line' || numerico) serie.sort((a,b) => numerico ? aNumero(a.clave) - aNumero(b.clave) : a.clave.localeCompare(b.clave));
+    else serie.sort((a,b) => b.valor - a.valor);
+    serie = serie.slice(0, c.tipoJs === 'doughnut' ? 8 : 15);
+
+    if (chartsInforme[i]) chartsInforme[i].destroy();
+    chartsInforme[i] = new Chart(document.getElementById('informe_c' + i), {
+      type: c.tipoJs,
+      data: { labels: serie.map(x => x.clave),
+        datasets: [{ label: c.medida.etiqueta, data: serie.map(x => x.valor),
+          backgroundColor: c.tipoJs === 'doughnut' ? serie.map((_, j) => PALETA[j % PALETA.length])
+                          : (c.tipoJs === 'line' ? 'rgba(242,200,17,.18)' : PALETA[0]),
+          borderColor: c.tipoJs === 'line' ? '#8a6d00' : (c.tipoJs === 'doughnut' ? '#fff' : '#c9a50a'),
+          borderWidth: c.tipoJs === 'doughnut' ? 2 : 1.5, fill: c.tipoJs === 'line', tension:.3, pointRadius:2.5 }] },
+      options: { responsive:true, maintainAspectRatio:false,
+        indexAxis: c.horizontal ? 'y' : 'x',
+        plugins:{ legend:{ display: c.tipoJs === 'doughnut', position:'right', labels:{boxWidth:12, font:{size:11}} },
+                  tooltip:{ callbacks:{ label: ctx => ' ' + fmt(ctx.parsed.y ?? ctx.parsed.x ?? ctx.parsed) } } },
+        scales: c.tipoJs === 'doughnut' ? {} : {
+          x:{ ticks:{ font:{size:10.5}, maxRotation:45, autoSkip:true, callback: function(v){ const l = this.getLabelForValue ? this.getLabelForValue(v) : v; return c.horizontal ? fmt(v) : l; } } },
+          y:{ ticks:{ font:{size:10.5}, callback: v => c.horizontal ? undefined : fmt(v) }, beginAtZero:true } } }
+    });
+  });
+
+  // Tablas
+  __informe.tablas.forEach((t, i) => {
+    const tabla = document.getElementById('informe_t' + i);
+    const cols = [...t.cols.map(c => c), ...t.medidas.map(m => ({campo:m.campo, etiqueta:m.etiqueta}))];
+    if (!cols.length) return;
+    let html = '<thead><tr>' + cols.map(() => '<th></th>').join('') + '</tr></thead><tbody>';
+    const visibles = filas.slice(0, 20);
+    visibles.forEach(() => { html += '<tr>' + cols.map(() => '<td></td>').join('') + '</tr>'; });
+    tabla.innerHTML = html + '</tbody>';
+    tabla.querySelectorAll('th').forEach((th, j) => th.textContent = cols[j].etiqueta);
+    const trs = tabla.querySelectorAll('tbody tr');
+    visibles.forEach((f, r) => {
+      const tds = trs[r].querySelectorAll('td');
+      cols.forEach((cCol, cIdx) => tds[cIdx].textContent = formatoCelda(f[cCol.campo]));
+    });
+  });
+}
+
 /* ---------------- Lector de archivos .pbix / .pbit ----------------
    Un .pbix es un ZIP. La estructura del informe (Report/Layout, JSON en
    UTF-16) y las consultas M (DataMashup) son legibles; los DATOS del
@@ -948,6 +1363,7 @@ async function procesarPbix(file){
     }
 
     // La radiografía se muestra de inmediato; el servidor se busca en segundo plano
+    window.__layoutPbix = layout;
     mostrarInfoPbix(file.name, version, layout, consultasM, {estado:'buscando'});
     (async () => {
       let srv = await estadoServidorPbix();
@@ -1082,6 +1498,24 @@ function renderBloqueServidor(srv){
   }
 
   if (srv.estado === 'ok' && Array.isArray(srv.tablas) && srv.tablas.length){
+    srv.tablas = srv.tablas.filter(t => !/^(LocalDateTable_|DateTableTemplate_)/.test(t));
+    const hayInforme = window.__layoutPbix && Array.isArray(window.__layoutPbix.sections) &&
+      window.__layoutPbix.sections.some(p => (p.visualContainers || []).length);
+    if (hayInforme){
+      const filaR = document.createElement('div');
+      filaR.className = 'config-fila';
+      filaR.style.border = '2px solid var(--accent)';
+      filaR.style.borderRadius = '10px';
+      filaR.style.marginBottom = '10px';
+      filaR.innerHTML = '<div class="config-info"><div class="config-nombre">✨ Reconstruir el informe original</div>' +
+        '<div class="config-muestra">Detectamos el diseño hecho en Power BI: tarjetas, segmentadores y gráficos. Se recrea aquí con los datos reales del modelo.</div></div>';
+      const btnR = document.createElement('button');
+      btnR.type = 'button'; btnR.className = 'primary btn-mini';
+      btnR.textContent = 'Ver como el original';
+      btnR.addEventListener('click', () => reconstruirInforme(srv, btnR));
+      filaR.appendChild(btnR);
+      cont.appendChild(filaR);
+    }
     const titulo = document.createElement('p');
     titulo.innerHTML = '<strong>✔ Servidor de datos conectado.</strong> Elige la tabla del modelo para generar el dashboard con sus datos completos' +
       (srv.medidas ? ' · ' + srv.medidas + ' medida(s) DAX en el modelo' : '') + ':';
@@ -1474,6 +1908,11 @@ function volverACarga(){
   const visor = document.getElementById('visorPbi');
   visor.classList.remove('active');
   visor.innerHTML = '';
+  Object.values(chartsInforme).forEach(c => c.destroy());
+  chartsInforme = {}; __informe = null; filtrosInforme = {};
+  const inf = document.getElementById('informePbix');
+  inf.classList.remove('active');
+  inf.innerHTML = '';
   document.querySelector('main').classList.remove('pantalla-ancha');
   document.getElementById('setup').style.display = 'flex';
   document.getElementById('btnNuevo').hidden = true;
