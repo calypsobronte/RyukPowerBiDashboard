@@ -58,11 +58,34 @@ def cargar_pbixray():
 # (cámbiala con MONGO_COLECCION si prefieres otro nombre).
 _COL = None
 
+def _normalizar_uri(uri):
+    """Escapa usuario y contraseña según RFC 3986 (p. ej. una @ en la clave
+    se vuelve %40). Es idempotente: si ya vienen escapados, no los daña."""
+    try:
+        from urllib.parse import quote_plus, unquote_plus
+        for esquema in ('mongodb+srv://', 'mongodb://'):
+            if uri.startswith(esquema):
+                resto = uri[len(esquema):]
+                if '@' not in resto:
+                    return uri
+                # El host no puede contener @, así que el último @ es el separador real
+                cred, host = resto.rsplit('@', 1)
+                if ':' in cred:
+                    usuario, clave = cred.split(':', 1)
+                    cred = quote_plus(unquote_plus(usuario)) + ':' + quote_plus(unquote_plus(clave))
+                else:
+                    cred = quote_plus(unquote_plus(cred))
+                return esquema + cred + '@' + host
+        return uri
+    except Exception:
+        return uri
+
+
 def obtener_coleccion():
     global _COL
     if _COL is not None:
         return _COL, None
-    uri = os.environ.get('MONGO_URI', '').strip()
+    uri = _normalizar_uri(os.environ.get('MONGO_URI', '').strip())
     if not uri:
         return None, 'Falta configurar MONGO_URI (cadena de conexión de MongoDB Atlas) en el servidor.'
     try:
@@ -74,6 +97,10 @@ def obtener_coleccion():
         cliente.admin.command('ping')
         db  = cliente[os.environ.get('MONGO_DB', 'ryukpowerbi')]
         _COL = db[os.environ.get('MONGO_COLECCION', 'dashboard')]
+        try:
+            _COL.create_index('huella')
+        except Exception:
+            pass
         return _COL, None
     except Exception as e:
         return None, f'No se pudo conectar a MongoDB: {e}'
@@ -137,6 +164,20 @@ class Manejador(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(500, {'error': f'No se pudo leer la tabla "{nombre}": {e}'})
 
+        if u.path == '/dashboard/huella':
+            col, err = obtener_coleccion()
+            if col is None:
+                return self._json(500, {'error': err})
+            h = q.get('h', [''])[0]
+            if not h:
+                return self._json(400, {'error': 'Falta el parámetro h.'})
+            doc = col.find_one({'huella': h})
+            if not doc:
+                return self._json(404, {'error': 'Sin dashboard para esta huella.'})
+            return self._json(200, {'id': doc['_id'],
+                                    'titulo': doc.get('titulo', ''),
+                                    'creado': doc.get('creado', 0)})
+
         if u.path == '/dashboard':
             col, err = obtener_coleccion()
             if col is None:
@@ -180,12 +221,25 @@ class Manejador(BaseHTTPRequestHandler):
                 return self._json(400, {'error': 'Falta la configuración de columnas.'})
             if len(datos) > MAX_FILAS_COMPARTIR:
                 datos = datos[:MAX_FILAS_COMPARTIR]
+            huella = str(cuerpo.get('huella', ''))[:120]
+            campos = {'titulo': str(cuerpo.get('titulo', ''))[:120],
+                      'columnas': columnas,
+                      'datos': datos,
+                      'actualizado_en': time.time()}
+
+            # Dashboards únicos: si el archivo (huella) ya tiene dashboard,
+            # se actualiza ese mismo registro y el enlace no cambia.
+            if huella:
+                existente = col.find_one({'huella': huella})
+                if existente:
+                    try:
+                        col.update_one({'_id': existente['_id']}, {'$set': campos})
+                    except Exception as e:
+                        return self._json(500, {'error': f'No se pudo actualizar en MongoDB: {e}'})
+                    return self._json(200, {'id': existente['_id'], 'filas': len(datos), 'actualizado': True})
+
             id_dash = uuid.uuid4().hex[:10]
-            doc = {'_id': id_dash,
-                   'titulo': str(cuerpo.get('titulo', ''))[:120],
-                   'columnas': columnas,
-                   'datos': datos,
-                   'creado': time.time()}
+            doc = dict(campos, _id=id_dash, huella=huella, creado=time.time())
             try:
                 col.insert_one(doc)
             except Exception as e:
