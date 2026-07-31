@@ -483,7 +483,7 @@
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
   <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
-  <span>v5.2</span>
+  <span>v5.3</span>
 </footer>
 
 <script>
@@ -929,6 +929,41 @@ function parsearDax(expr){
   return null;
 }
 
+/* Cuando el servidor no entrega las relaciones del modelo, se infieren:
+   dos tablas se relacionan si comparten una columna con el mismo nombre
+   y en una de ellas esa columna es (casi) única — la clásica llave. */
+function inferirRelaciones(tablas){
+  const nombres = Object.keys(tablas).filter(n => tablas[n] && tablas[n].length);
+  const unicidad = (filas, col) => {
+    const set = new Set(); let n = 0;
+    for (const f of filas){
+      const v = f[col];
+      if (v === '' || v == null) continue;
+      n++; set.add(claveRel(v));
+    }
+    return n ? set.size / n : 0;
+  };
+  const rels = [];
+  for (const A of nombres){
+    for (const B of nombres){
+      if (A === B) continue;
+      const colsB = new Map(Object.keys(tablas[B][0] || {}).map(c => [c.toLowerCase(), c]));
+      for (const c of Object.keys(tablas[A][0] || {})){
+        const cb = colsB.get(c.toLowerCase());
+        if (!cb) continue;
+        const uB = unicidad(tablas[B], cb);
+        const uA = unicidad(tablas[A], c);
+        // B actúa como dimensión (llave única); A como lado "muchos"
+        if (uB >= 0.95 && (uA < 0.95 || tablas[A].length >= tablas[B].length)){
+          if (!rels.some(r => r.deTabla === A && r.deCol === c && r.aTabla === B))
+            rels.push({deTabla: A, deCol: c, aTabla: B, aCol: cb});
+        }
+      }
+    }
+  }
+  return rels;
+}
+
 function claveRel(v){
   if (v === '' || v == null) return '';
   const d = aFecha(v);
@@ -1099,7 +1134,13 @@ async function reconstruirInforme(srv, boton){
       }catch(e){}
     }
     boton.textContent = 'Cruzando y armando…';
-    const plana = construirTablaPlana(tablas, srv.relaciones || []);
+    let relaciones = srv.relaciones || [];
+    let relInferidas = false;
+    if (!relaciones.length){
+      relaciones = inferirRelaciones(tablas);
+      relInferidas = relaciones.length > 0;
+    }
+    const plana = construirTablaPlana(tablas, relaciones);
     if (!plana.filas.length) throw new Error('Las tablas del modelo no entregaron datos.');
 
     const medidas = srv.medidas_detalle || [];
@@ -1154,7 +1195,8 @@ async function reconstruirInforme(srv, boton){
     });
 
     __informe = {filas: plana.filas, cols: plana.cols, slicers, kpis, charts, tablas: tablasV,
-                 omitidos: omitidosL, sinMedidas: !(srv.medidas_detalle || []).length};
+                 omitidos: omitidosL, sinMedidas: !(srv.medidas_detalle || []).length,
+                 relInferidas, erroresSrv: srv.errores || []};
     filtrosInforme = {};
     hojaUsada = 'informe original';
     huellaActual = huellaPbixBase ? huellaPbixBase + '::informe' : '';
@@ -1181,7 +1223,9 @@ function montarInforme(){
   cab.innerHTML = '<strong>Informe reconstruido desde el diseño original del .pbix</strong> · ' +
     __informe.filas.length.toLocaleString('es-CO') + ' filas cruzadas' +
     (__informe.omitidos.length ? ' · omitidos: ' + __informe.omitidos.join(' · ') : '') +
-    (__informe.sinMedidas ? ' · ⚠ el servidor no entregó las medidas DAX del modelo (actualiza servidor_pbix.py y redespliega)' : '') +
+    (__informe.relInferidas ? ' · cruces inferidos por nombres de columna' : '') +
+    (__informe.sinMedidas ? ' · ⚠ el servidor no entregó las medidas DAX del modelo (verifica en /salud que diga "version": "5.3" y si no, actualiza servidor_pbix.py y redespliega con "Clear build cache")' : '') +
+    (__informe.erroresSrv.length ? ' · avisos del servidor: ' + __informe.erroresSrv.join(' · ') : '') +
     '. Recreación aproximada: mismos campos y agregaciones, no los colores ni posiciones exactas.';
   cont.appendChild(cab);
 
