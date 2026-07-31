@@ -153,6 +153,7 @@
   }
   .campo-url input:focus-visible{ outline:2px solid var(--accent-ink); outline-offset:1px; }
   .hint{ font-size:12.5px; color:var(--muted); line-height:1.55; }
+  .hint a{ color:var(--accent-ink); font-weight:600; }
   .hint code{
     background:var(--paper); border:1px solid var(--line);
     border-radius:5px; padding:1px 6px;
@@ -366,6 +367,7 @@
   <div class="toolbar">
     <button type="button" id="btnNuevo" hidden onclick="volverACarga()">Cambiar fuente</button>
     <button type="button" id="btnColumnas" hidden onclick="reabrirConfiguracion()">Columnas</button>
+    <button type="button" id="btnCompartir" hidden onclick="compartirDashboard()">Compartir enlace</button>
     <button type="button" id="btnFullPbi" hidden onclick="pantallaCompletaPbi()">Pantalla completa</button>
     <button type="button" id="btnImprimir" hidden onclick="window.print()">Imprimir / PDF</button>
   </div>
@@ -398,6 +400,10 @@
         <span>Logística</span><span>Manufactura</span><span>Educación</span>
         <span>Restaurantes</span><span>Servicios</span><span>Agro</span>
       </div>
+
+      <p class="hint">¿Necesitas algo más especializado (integraciones, informes a la medida, automatizaciones)?
+      Contáctame en <a href="https://ryukplay.dev/" target="_blank" rel="noopener">ryukplay.dev</a>
+      o al correo <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a>.</p>
     </div>
 
     <!-- Opción 2: conectar Power BI por enlace -->
@@ -451,8 +457,9 @@
 
 <footer>
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
-  <span>Creado por <a href="https://calypsobronte.github.io/" target="_blank" rel="noopener author">RyukPlay</a></span>
-  <span>v3.1</span>
+  <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
+  <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
+  <span>v4.0</span>
 </footer>
 
 <script>
@@ -507,6 +514,90 @@ function limpiarFilas(filas){
     return limpia;
   });
 }
+
+/* ---------------- Compartir dashboard por URL ----------------
+   Guarda el dashboard actual en el servidor (MongoDB) y entrega un
+   enlace tipo ?d=ID que cualquier persona puede abrir.            */
+
+const MAX_FILAS_COMPARTIR = 20000;
+
+async function compartirDashboard(){
+  if (!datos.length){ alert('Primero genera un dashboard.'); return; }
+  const btn = document.getElementById('btnCompartir');
+  const txt = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Creando enlace…';
+  try{
+    if (!urlServidorPbix) await estadoServidorPbix();
+    if (!urlServidorPbix)
+      throw new Error('No se encontró el servidor de dashboards. Si necesitas ayuda escríbeme a ryukdeathnotetv@gmail.com');
+
+    const cuerpo = {
+      titulo: 'Dashboard' + (hojaUsada ? ' · ' + hojaUsada : ''),
+      columnas: columnas,
+      datos: datos.slice(0, MAX_FILAS_COMPARTIR)
+    };
+    const r = await fetch(urlServidorPbix + '/dashboard', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(cuerpo)
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'El servidor no pudo guardar el dashboard.');
+
+    const enlace = location.origin + location.pathname + '?d=' + j.id;
+    let copiado = false;
+    try{ await navigator.clipboard.writeText(enlace); copiado = true; }catch(e){}
+    prompt('Enlace de tu dashboard' + (copiado ? ' (ya copiado al portapapeles)' : '') +
+      (datos.length > MAX_FILAS_COMPARTIR ? ' · se guardaron las primeras ' + MAX_FILAS_COMPARTIR.toLocaleString('es-CO') + ' filas' : '') + ':', enlace);
+  }catch(e){
+    alert('No se pudo crear el enlace: ' + (e.message || e));
+  }
+  btn.disabled = false; btn.textContent = txt;
+}
+
+async function cargarCompartido(id){
+  const panel = document.getElementById('pbixInfo');
+  document.getElementById('setup').style.display = 'none';
+  panel.style.display = 'flex';
+  panel.innerHTML = '<h2>Cargando dashboard compartido…</h2>' +
+    '<p style="color:var(--muted);font-size:14px;text-align:center;max-width:520px;margin:0 auto;">' +
+    'Si el servidor estaba dormido (plan gratuito), despertar puede tardar hasta un minuto.</p>';
+  try{
+    await estadoServidorPbix();
+    if (!urlServidorPbix) throw new Error('El servidor de dashboards no respondió.');
+    const r = await fetch(urlServidorPbix + '/dashboard?id=' + encodeURIComponent(id));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'No se pudo cargar.');
+    if (!Array.isArray(j.datos) || !j.datos.length || !Array.isArray(j.columnas) || !j.columnas.length)
+      throw new Error('El dashboard llegó incompleto.');
+
+    datosCrudos = j.datos;
+    datos = j.datos;
+    columnas = j.columnas;
+    filtrosActivos = {};
+    hojaUsada = '';
+    if (j.titulo) document.querySelector('.brand-text p').textContent = j.titulo;
+
+    panel.style.display = 'none';
+    document.getElementById('dashboard').classList.add('active');
+    document.getElementById('btnNuevo').hidden = false;
+    document.getElementById('btnImprimir').hidden = false;
+    document.getElementById('btnColumnas').hidden = false;
+    document.getElementById('btnCompartir').hidden = false;
+
+    construirFiltros();
+    construirSelectoresYGraficos();
+    refrescarTodo();
+  }catch(e){
+    panel.innerHTML = '<h2>No se pudo cargar el dashboard</h2>' +
+      '<p style="color:var(--muted);font-size:14px;text-align:center;max-width:520px;margin:0 auto;">' +
+      String(e.message || e).replace(/</g,'&lt;') + '</p>' +
+      '<button class="primary" type="button" onclick="location.href=location.pathname">Ir al inicio</button>';
+  }
+}
+
+const __idCompartido = new URLSearchParams(location.search).get('d');
+if (__idCompartido) cargarCompartido(__idCompartido);
 
 /* ---------------- Pestañas de la pantalla inicial ---------------- */
 
@@ -629,7 +720,7 @@ async function probarServidor(base, ms){
 async function estadoServidorPbix(){
   // Primero el servidor local (rápido y privado); luego el remoto si está configurado
   const candidatos = [[URL_SERVIDOR_LOCAL, 1200]];
-  if (URL_SERVIDOR_REMOTO.trim()) candidatos.push([URL_SERVIDOR_REMOTO.trim().replace(/\/+$/,''), 6000]);
+  if (URL_SERVIDOR_REMOTO.trim()) candidatos.push([URL_SERVIDOR_REMOTO.trim().replace(/\/+$/,''), 65000]);
   for (const [base, ms] of candidatos){
     const j = await probarServidor(base, ms);
     if (j){
@@ -742,18 +833,21 @@ async function procesarPbix(file){
       version = new TextDecoder('utf-16le').decode(vb).replace(/\0/g,'').trim();
     }
 
-    // ¿Está corriendo el servidor local de lectura completa?
-    let srv = await estadoServidorPbix();
-    if (srv.estado === 'ok'){
-      try{
-        const r = await fetch(urlServidorPbix + '/subir', {method:'POST', body:file});
-        const j = await r.json();
-        srv = r.ok ? Object.assign({estado:'ok'}, j)
-                   : {estado:'error', mensaje: j.error || 'Error del servidor local'};
-      }catch(e){ srv = {estado:'error', mensaje:'No se pudo enviar el archivo al servidor local.'}; }
-    }
-
-    mostrarInfoPbix(file.name, version, layout, consultasM, srv);
+    // La radiografía se muestra de inmediato; el servidor se busca en segundo plano
+    mostrarInfoPbix(file.name, version, layout, consultasM, {estado:'buscando'});
+    (async () => {
+      let srv = await estadoServidorPbix();
+      if (srv.estado === 'ok'){
+        renderBloqueServidor({estado:'subiendo'});
+        try{
+          const r = await fetch(urlServidorPbix + '/subir', {method:'POST', body:file});
+          const j = await r.json();
+          srv = r.ok ? Object.assign({estado:'ok'}, j)
+                     : {estado:'error', mensaje: j.error || 'Error del servidor'};
+        }catch(e){ srv = {estado:'error', mensaje:'No se pudo enviar el archivo al servidor.'}; }
+      }
+      renderBloqueServidor(srv);
+    })();
   }catch(err){
     errorPbix('No se pudo abrir el archivo: ' + (err.message || 'formato no reconocido') +
       '. Si el .pbix tiene etiqueta de confidencialidad o cifrado, el navegador no puede leerlo.');
@@ -791,53 +885,15 @@ function mostrarInfoPbix(nombreArchivo, version, layout, consultasM, srv){
     ' · ' + paginas.length + ' página(s) · ' + totalVisuales + ' visual(es)';
   cont.appendChild(resumen);
 
-  /* ----- Datos del modelo (vía servidor local) ----- */
-  srv = srv || {estado:'sin-servidor'};
-  if (srv.estado === 'ok' && Array.isArray(srv.tablas) && srv.tablas.length){
-    const titulo = document.createElement('p');
-    titulo.innerHTML = '<strong>✔ Servidor local conectado.</strong> Elige la tabla del modelo para generar el dashboard con sus datos completos' +
-      (srv.medidas ? ' · ' + srv.medidas + ' medida(s) DAX en el modelo' : '') + ':';
-    titulo.style.fontSize = '14px';
-    cont.appendChild(titulo);
-
-    const listaTablas = document.createElement('div');
-    listaTablas.className = 'config-lista';
-    srv.tablas.forEach(nombreTabla => {
-      const fila = document.createElement('div');
-      fila.className = 'config-fila';
-      fila.innerHTML = '<div class="config-info"><div class="config-nombre"></div><div class="config-muestra"></div></div>';
-      fila.querySelector('.config-nombre').textContent = nombreTabla;
-      const cols = (srv.columnas && srv.columnas[nombreTabla]) || [];
-      fila.querySelector('.config-muestra').textContent = cols.length ? 'Columnas: ' + cols.join(', ') : '';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'primary btn-mini';
-      btn.textContent = 'Generar dashboard';
-      btn.addEventListener('click', () => cargarTablaPbix(srv.token, nombreTabla, btn));
-      fila.appendChild(btn);
-      listaTablas.appendChild(fila);
-    });
-    cont.appendChild(listaTablas);
-  } else {
-    const aviso = document.createElement('div');
-    aviso.className = 'srv-aviso';
-    if (srv.estado === 'error'){
-      aviso.innerHTML = '<strong>El servidor local respondió con un error:</strong> ' +
-        String(srv.mensaje || '').replace(/</g,'&lt;');
-    } else if (srv.estado === 'sin-pbixray'){
-      aviso.innerHTML = '<strong>El servidor local está corriendo, pero falta la librería de lectura.</strong> ' +
-        'Ejecuta esto en la misma terminal y vuelve a subir el archivo:' +
-        '<pre>pip install pbixray pandas</pre>';
-    } else {
-      aviso.innerHTML = '<strong>¿Quieres leer también los DATOS del modelo?</strong> ' +
-        'Los datos del .pbix van comprimidos con XPress9 (formato propietario de Microsoft) y el navegador no puede leerlos, ' +
-        'pero el servidor local incluido sí. Actívalo así:' +
-        '<pre>pip install pbixray pandas' + String.fromCharCode(10) + 'python servidor_pbix.py</pre>' +
-        'Deja esa ventana abierta y <strong>vuelve a subir el archivo .pbix</strong>: aparecerán las tablas del modelo listas para generar el dashboard. ' +
-        'El servidor corre solo en tu computador (127.0.0.1) y no envía nada a internet.';
-    }
-    cont.appendChild(aviso);
-  }
+  /* ----- Datos del modelo: contenedor actualizable en segundo plano ----- */
+  const bloqueSrv = document.createElement('div');
+  bloqueSrv.id = 'bloqueSrvPbix';
+  bloqueSrv.style.width = '100%';
+  bloqueSrv.style.display = 'flex';
+  bloqueSrv.style.flexDirection = 'column';
+  bloqueSrv.style.gap = '12px';
+  cont.appendChild(bloqueSrv);
+  renderBloqueServidor(srv || {estado:'buscando'});
 
   if (!paginas.length){
     const aviso = document.createElement('p');
@@ -893,6 +949,70 @@ function mostrarInfoPbix(nombreArchivo, version, layout, consultasM, srv){
   nota.innerHTML = 'Los <strong>datos del modelo</strong> están comprimidos en un formato propietario de Microsoft (XPress9) que el navegador no puede descomprimir. ' +
     'Para graficarlos aquí: abre el informe en Power BI, exporta la tabla a CSV/Excel y usa la pestaña <strong>Subir datos</strong>.';
   cont.appendChild(nota);
+}
+
+function renderBloqueServidor(srv){
+  const cont = document.getElementById('bloqueSrvPbix');
+  if (!cont) return;
+  cont.innerHTML = '';
+  srv = srv || {estado:'sin-servidor'};
+
+  if (srv.estado === 'buscando' || srv.estado === 'subiendo'){
+    const aviso = document.createElement('div');
+    aviso.className = 'srv-aviso';
+    aviso.innerHTML = srv.estado === 'subiendo'
+      ? '<strong>Servidor encontrado.</strong> Enviando el archivo y leyendo el modelo…'
+      : '<strong>Buscando servidor de lectura de datos…</strong> Si está en un plan gratuito de la nube y llevaba un rato inactivo, despertar puede tardar hasta un minuto. La radiografía de arriba ya está lista.';
+    cont.appendChild(aviso);
+    return;
+  }
+
+  if (srv.estado === 'ok' && Array.isArray(srv.tablas) && srv.tablas.length){
+    const titulo = document.createElement('p');
+    titulo.innerHTML = '<strong>✔ Servidor de datos conectado.</strong> Elige la tabla del modelo para generar el dashboard con sus datos completos' +
+      (srv.medidas ? ' · ' + srv.medidas + ' medida(s) DAX en el modelo' : '') + ':';
+    titulo.style.fontSize = '14px';
+    cont.appendChild(titulo);
+
+    const listaTablas = document.createElement('div');
+    listaTablas.className = 'config-lista';
+    srv.tablas.forEach(nombreTabla => {
+      const fila = document.createElement('div');
+      fila.className = 'config-fila';
+      fila.innerHTML = '<div class="config-info"><div class="config-nombre"></div><div class="config-muestra"></div></div>';
+      fila.querySelector('.config-nombre').textContent = nombreTabla;
+      const cols = (srv.columnas && srv.columnas[nombreTabla]) || [];
+      fila.querySelector('.config-muestra').textContent = cols.length ? 'Columnas: ' + cols.join(', ') : '';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'primary btn-mini';
+      btn.textContent = 'Generar dashboard';
+      btn.addEventListener('click', () => cargarTablaPbix(srv.token, nombreTabla, btn));
+      fila.appendChild(btn);
+      listaTablas.appendChild(fila);
+    });
+    cont.appendChild(listaTablas);
+    return;
+  }
+
+  const aviso = document.createElement('div');
+  aviso.className = 'srv-aviso';
+  if (srv.estado === 'error'){
+    aviso.innerHTML = '<strong>El servidor respondió con un error:</strong> ' +
+      String(srv.mensaje || '').replace(/</g,'&lt;');
+  } else if (srv.estado === 'sin-pbixray'){
+    aviso.innerHTML = '<strong>El servidor está corriendo, pero falta la librería de lectura.</strong> ' +
+      'Ejecuta esto donde corre el servidor y vuelve a subir el archivo:' +
+      '<pre>pip install pbixray pandas</pre>';
+  } else {
+    aviso.innerHTML = '<strong>¿Quieres leer también los DATOS del modelo?</strong> ' +
+      'Los datos del .pbix van comprimidos con XPress9 (formato propietario de Microsoft) y el navegador no puede leerlos, ' +
+      'pero el servidor incluido sí. Actívalo en tu computador así:' +
+      '<pre>pip install pbixray pandas' + String.fromCharCode(10) + 'python servidor_pbix.py</pre>' +
+      'Deja esa ventana abierta y <strong>vuelve a subir el archivo .pbix</strong>. ' +
+      'El servidor local corre solo en tu equipo (127.0.0.1) y no envía nada a internet.';
+  }
+  cont.appendChild(aviso);
 }
 
 /* ---------------- Carga de archivo ---------------- */
@@ -1187,6 +1307,7 @@ function generarDesdeConfig(){
   document.getElementById('dashboard').classList.add('active');
   document.getElementById('btnImprimir').hidden = false;
   document.getElementById('btnColumnas').hidden = false;
+  document.getElementById('btnCompartir').hidden = false;
 
   construirFiltros();
   construirSelectoresYGraficos();
@@ -1212,6 +1333,8 @@ function volverACarga(){
   document.getElementById('configCols').style.display = 'none';
   document.getElementById('pbixInfo').style.display = 'none';
   document.getElementById('btnColumnas').hidden = true;
+  document.getElementById('btnCompartir').hidden = true;
+  if (location.search) history.replaceState(null, '', location.pathname);
   const visor = document.getElementById('visorPbi');
   visor.classList.remove('active');
   visor.innerHTML = '';
