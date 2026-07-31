@@ -483,7 +483,7 @@
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
   <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
-  <span>v5.1</span>
+  <span>v5.2</span>
 </footer>
 
 <script>
@@ -929,12 +929,27 @@ function parsearDax(expr){
   return null;
 }
 
+function claveRel(v){
+  if (v === '' || v == null) return '';
+  const d = aFecha(v);
+  if (d) return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  const n = aNumero(v);
+  if (n !== null) return String(n);
+  return String(v).trim().toLowerCase();
+}
+
 /* Une las tablas del modelo siguiendo las relaciones → una tabla plana
-   con columnas "Tabla.Columna", partiendo de la tabla de hechos (la mayor). */
+   con columnas "Tabla.Columna". La tabla de HECHOS se elige por relaciones
+   (la que más veces está del lado "muchos"), no por cantidad de filas —
+   así una tabla de calendario grande nunca desplaza a la de hechos.       */
 function construirTablaPlana(tablas, relaciones){
   const nombres = Object.keys(tablas).filter(n => tablas[n] && tablas[n].length);
   if (!nombres.length) return {filas: [], cols: new Set()};
-  const hecho = nombres.reduce((a, b) => tablas[b].length > tablas[a].length ? b : a);
+  const puntaje = {};
+  nombres.forEach(n => puntaje[n] = 0);
+  (relaciones || []).forEach(r => { if (puntaje[r.deTabla] != null) puntaje[r.deTabla] += 1000; });
+  const hecho = nombres.reduce((a, b) =>
+    (puntaje[b] + Math.min(tablas[b].length, 999)) > (puntaje[a] + Math.min(tablas[a].length, 999)) ? b : a);
   const filas = tablas[hecho].map(f => {
     const g = {};
     for (const k of Object.keys(f)) g[hecho + '.' + k] = f[k];
@@ -952,9 +967,9 @@ function construirTablaPlana(tablas, relaciones){
         interna = r.aTabla; colInt = r.aCol; externa = r.deTabla; colExt = r.deCol;
       } else continue;
       const indice = new Map();
-      for (const f of tablas[externa]) indice.set(String(f[colExt]), f);
+      for (const f of tablas[externa]) indice.set(claveRel(f[colExt]), f);
       for (const fila of filas){
-        const ext = indice.get(String(fila[interna + '.' + colInt]));
+        const ext = indice.get(claveRel(fila[interna + '.' + colInt]));
         if (ext) for (const k of Object.keys(ext)) fila[externa + '.' + k] = ext[k];
       }
       incluidas.add(externa);
@@ -1089,7 +1104,7 @@ async function reconstruirInforme(srv, boton){
 
     const medidas = srv.medidas_detalle || [];
     const slicers = [], kpis = [], charts = [], tablasV = [];
-    let omitidos = 0;
+    const omitidosL = [];
     const paginas = (window.__layoutPbix && window.__layoutPbix.sections) || [];
 
     paginas.forEach(pag => {
@@ -1097,17 +1112,23 @@ async function reconstruirInforme(srv, boton){
         let cfg = null;
         try{ cfg = JSON.parse(v.config || '{}'); }catch(e){}
         const tipo = (cfg && cfg.singleVisual && cfg.singleVisual.visualType) || '';
-        if (!tipo || ['textbox','image','shape','actionButton'].includes(tipo)) return;
-        const refs = camposDeVisual(cfg).map(r => resolverRef(r, medidas, plana.cols)).filter(Boolean);
+        const tBajo = tipo.toLowerCase();
+        if (!tipo || ['textbox','image','shape','basicshape','actionbutton'].includes(tBajo)) return;
+        const crudos = camposDeVisual(cfg);
+        const refs = crudos.map(r => resolverRef(r, medidas, plana.cols)).filter(Boolean);
         const colsV = refs.filter(r => r.tipo === 'columna');
         const medsV = refs.filter(r => r.tipo === 'medida');
-        if (refs.some(r => r.tipo === 'no-soportada') && !medsV.length && !colsV.length){ omitidos++; return; }
+        const noSop = refs.filter(r => r.tipo === 'no-soportada');
+        if (!medsV.length && !colsV.length){
+          omitidosL.push((NOMBRES_VISUAL[tipo] || tipo) + (noSop.length ? ' (' + noSop.map(x => x.etiqueta).join(', ') + ')' : crudos.length ? ' (' + crudos.join(', ') + ')' : ''));
+          return;
+        }
 
-        if (tipo === 'slicer'){
+        if (tBajo === 'slicer'){
           if (colsV[0]) slicers.push(colsV[0]);
           return;
         }
-        if (['card','kpi','multiRowCard','gauge'].includes(tipo)){
+        if (tBajo.includes('card') || tBajo === 'kpi' || tBajo === 'gauge'){
           medsV.forEach(m => kpis.push({...m, pagina: pag.displayName}));
           if (!medsV.length && colsV[0]) kpis.push({tipo:'medida', agg:'distinct', campo:colsV[0].campo, etiqueta:'Distintos · ' + colsV[0].etiqueta});
           return;
@@ -1118,8 +1139,11 @@ async function reconstruirInforme(srv, boton){
         }
         // Gráficos
         const dim = colsV[0];
-        const medida = medsV[0] || (dim ? {tipo:'medida', agg:'conteo', campo:dim.campo, etiqueta:'Conteo'} : null);
-        if (!dim || !medida){ omitidos++; return; }
+        const medida = medsV[0] || (dim ? {tipo:'medida', agg:'conteo', campo:dim.campo, etiqueta:'Conteo de registros'} : null);
+        if (!dim || !medida){
+          omitidosL.push((NOMBRES_VISUAL[tipo] || tipo) + (noSop.length ? ' (' + noSop.map(x => x.etiqueta).join(', ') + ')' : ''));
+          return;
+        }
         let tipoJs = 'bar', horizontal = false;
         const t = tipo.toLowerCase();
         if (t.includes('pie') || t.includes('donut') || t.includes('treemap') || t.includes('funnel')) tipoJs = 'doughnut';
@@ -1129,7 +1153,8 @@ async function reconstruirInforme(srv, boton){
       });
     });
 
-    __informe = {filas: plana.filas, cols: plana.cols, slicers, kpis, charts, tablas: tablasV, omitidos};
+    __informe = {filas: plana.filas, cols: plana.cols, slicers, kpis, charts, tablas: tablasV,
+                 omitidos: omitidosL, sinMedidas: !(srv.medidas_detalle || []).length};
     filtrosInforme = {};
     hojaUsada = 'informe original';
     huellaActual = huellaPbixBase ? huellaPbixBase + '::informe' : '';
@@ -1155,8 +1180,9 @@ function montarInforme(){
   cab.className = 'informe-cabecera';
   cab.innerHTML = '<strong>Informe reconstruido desde el diseño original del .pbix</strong> · ' +
     __informe.filas.length.toLocaleString('es-CO') + ' filas cruzadas' +
-    (__informe.omitidos ? ' · ' + __informe.omitidos + ' visual(es) omitido(s) por usar medidas DAX avanzadas' : '') +
-    '. Es una recreación aproximada: mismos campos y agregaciones, no los colores ni posiciones exactas.';
+    (__informe.omitidos.length ? ' · omitidos: ' + __informe.omitidos.join(' · ') : '') +
+    (__informe.sinMedidas ? ' · ⚠ el servidor no entregó las medidas DAX del modelo (actualiza servidor_pbix.py y redespliega)' : '') +
+    '. Recreación aproximada: mismos campos y agregaciones, no los colores ni posiciones exactas.';
   cont.appendChild(cab);
 
   // Segmentadores (slicers)
