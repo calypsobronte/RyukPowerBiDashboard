@@ -1,2 +1,3 @@
 pbixray
 pandas
+pymongo[srv]
