@@ -195,6 +195,16 @@
   .config-fila select:focus-visible{ outline:2px solid var(--accent-ink); outline-offset:1px; }
 
   .btn-mini{ padding:5px 12px; font-size:12px; flex:none; }
+  .banner-ok{
+    width:100%;
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap;
+    border:1px dashed #2e7d6b;
+    background:#eef7f3;
+    border-radius:10px;
+    padding:12px 16px;
+    font-size:13.5px;
+  }
   .srv-aviso{
     width:100%;
     border:1px dashed var(--accent-ink);
@@ -459,7 +469,7 @@
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
   <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
-  <span>v4.0</span>
+  <span>v4.1</span>
 </footer>
 
 <script>
@@ -519,6 +529,73 @@ function limpiarFilas(filas){
    Guarda el dashboard actual en el servidor (MongoDB) y entrega un
    enlace tipo ?d=ID que cualquier persona puede abrir.            */
 
+let huellaActual = '';   // SHA-256 del archivo subido → dashboards únicos
+let huellaPbixBase = ''; // huella del .pbix (se combina con la tabla elegida)
+
+async function hashArchivo(file){
+  try{
+    const buf = await file.arrayBuffer();
+    const h = await crypto.subtle.digest('SHA-256', buf);
+    return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2,'0')).join('');
+  }catch(e){ return ''; }
+}
+
+/* Si el archivo ya tiene dashboard guardado, avisa en el panel de columnas */
+async function consultarHuellaEnFondo(){
+  const h = huellaActual;
+  if (!h) return;
+  if (!urlServidorPbix) await estadoServidorPbix();
+  if (!urlServidorPbix || huellaActual !== h) return;
+  try{
+    const r = await fetch(urlServidorPbix + '/dashboard/huella?h=' + encodeURIComponent(h));
+    if (!r.ok) return;
+    const j = await r.json();
+    const cont = document.getElementById('configCols');
+    if (!j.id || cont.style.display === 'none' || document.getElementById('bannerExistente')) return;
+    const b = document.createElement('div');
+    b.id = 'bannerExistente';
+    b.className = 'banner-ok';
+    const f = j.creado ? new Date(j.creado * 1000).toLocaleDateString('es-CO') : '';
+    const txt = document.createElement('span');
+    txt.innerHTML = '<strong>✔ Este archivo ya tiene un dashboard creado</strong>' + (f ? ' (guardado el ' + f + ')' : '') + '.';
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'primary btn-mini';
+    btn.textContent = 'Ver dashboard existente';
+    btn.addEventListener('click', () => {
+      history.replaceState(null, '', location.pathname + '?d=' + j.id);
+      cargarCompartido(j.id);
+    });
+    b.appendChild(txt); b.appendChild(btn);
+    const h2 = cont.querySelector('h2');
+    if (h2 && h2.nextSibling) cont.insertBefore(b, h2.nextSibling); else cont.appendChild(b);
+  }catch(e){}
+}
+
+/* Une varias tablas/hojas compatibles en una sola, con columna de origen.
+   Compatible = comparte al menos la mitad de las columnas de la tabla mayor. */
+function unificarTablas(lista, etiquetaOrigen){
+  const conDatos = lista.filter(t => t.filas && t.filas.length);
+  if (!conDatos.length) return null;
+  if (conDatos.length === 1)
+    return {filas: conDatos[0].filas, usadas: [conDatos[0].nombre], omitidas: []};
+  const base = conDatos.reduce((a, b) => b.filas.length > a.filas.length ? b : a);
+  const colsBase = new Set(Object.keys(base.filas[0]));
+  const orden = [base, ...conDatos.filter(t => t !== base)];
+  const usadas = [], omitidas = [], filas = [];
+  for (const t of orden){
+    const cols = Object.keys(t.filas[0] || {});
+    const comunes = cols.filter(c => colsBase.has(c)).length;
+    if (t !== base && comunes / Math.max(colsBase.size, 1) < 0.5){ omitidas.push(t.nombre); continue; }
+    usadas.push(t.nombre);
+    for (const f of t.filas){
+      const g = Object.assign({}, f);
+      g[etiquetaOrigen] = t.nombre;
+      filas.push(g);
+    }
+  }
+  return {filas, usadas, omitidas};
+}
+
 const MAX_FILAS_COMPARTIR = 20000;
 
 async function compartirDashboard(){
@@ -533,6 +610,7 @@ async function compartirDashboard(){
 
     const cuerpo = {
       titulo: 'Dashboard' + (hojaUsada ? ' · ' + hojaUsada : ''),
+      huella: huellaActual || '',
       columnas: columnas,
       datos: datos.slice(0, MAX_FILAS_COMPARTIR)
     };
@@ -547,7 +625,7 @@ async function compartirDashboard(){
     const enlace = location.origin + location.pathname + '?d=' + j.id;
     let copiado = false;
     try{ await navigator.clipboard.writeText(enlace); copiado = true; }catch(e){}
-    prompt('Enlace de tu dashboard' + (copiado ? ' (ya copiado al portapapeles)' : '') +
+    prompt('Enlace de tu dashboard' + (j.actualizado ? ' — dashboard existente actualizado, el enlace no cambió' : '') + (copiado ? ' (ya copiado al portapapeles)' : '') +
       (datos.length > MAX_FILAS_COMPARTIR ? ' · se guardaron las primeras ' + MAX_FILAS_COMPARTIR.toLocaleString('es-CO') + ' filas' : '') + ':', enlace);
   }catch(e){
     alert('No se pudo crear el enlace: ' + (e.message || e));
@@ -734,6 +812,7 @@ async function estadoServidorPbix(){
 async function cargarTablaPbix(token, nombre, boton){
   const txt = boton.textContent;
   boton.disabled = true; boton.textContent = 'Cargando…';
+  huellaActual = huellaPbixBase ? huellaPbixBase + '::' + nombre : '';
   try{
     const r = await fetch(urlServidorPbix + '/tabla?token=' + encodeURIComponent(token) +
                           '&nombre=' + encodeURIComponent(nombre));
@@ -746,6 +825,35 @@ async function cargarTablaPbix(token, nombre, boton){
   }catch(e){
     boton.disabled = false; boton.textContent = txt;
     alert('No se pudo cargar la tabla: ' + (e.message || e));
+  }
+}
+
+async function generarUnificadoPbix(srv, boton){
+  const txt = boton.textContent;
+  boton.disabled = true;
+  try{
+    const lista = [];
+    for (let i = 0; i < srv.tablas.length; i++){
+      boton.textContent = 'Cargando ' + (i+1) + '/' + srv.tablas.length + '…';
+      try{
+        const r = await fetch(urlServidorPbix + '/tabla?token=' + encodeURIComponent(srv.token) +
+                              '&nombre=' + encodeURIComponent(srv.tablas[i]));
+        const cuerpo = await r.json();
+        if (r.ok && Array.isArray(cuerpo) && cuerpo.length)
+          lista.push({nombre: srv.tablas[i], filas: cuerpo});
+      }catch(e){ /* tabla omitida */ }
+    }
+    const uni = unificarTablas(lista, 'Origen (tabla)');
+    if (!uni || !uni.filas.length) throw new Error('Ninguna tabla del modelo entregó datos.');
+    hojaUsada = uni.usadas.length > 1
+      ? 'unificado: ' + uni.usadas.join(' + ') + (uni.omitidas.length ? ' · omitidas: ' + uni.omitidas.join(', ') : '')
+      : uni.usadas[0];
+    huellaActual = huellaPbixBase ? huellaPbixBase + '::unificado' : '';
+    document.getElementById('pbixInfo').style.display = 'none';
+    iniciarDashboard(limpiarFilas(uni.filas));
+  }catch(e){
+    alert('No se pudo generar el dashboard unificado: ' + (e.message || e));
+    boton.disabled = false; boton.textContent = txt;
   }
 }
 
@@ -792,6 +900,7 @@ function errorPbix(txt){
 async function procesarPbix(file){
   if (!file) return;
   document.getElementById('errorPbix').classList.remove('show');
+  huellaPbixBase = await hashArchivo(file);
   if (typeof JSZip === 'undefined'){
     errorPbix('No se pudo cargar la librería de lectura (JSZip). Verifica tu conexión a internet.');
     return;
@@ -992,6 +1101,22 @@ function renderBloqueServidor(srv){
       listaTablas.appendChild(fila);
     });
     cont.appendChild(listaTablas);
+
+    if (srv.tablas.length > 1){
+      const filaU = document.createElement('div');
+      filaU.className = 'config-fila';
+      filaU.style.border = '1px dashed var(--accent-ink)';
+      filaU.style.borderRadius = '10px';
+      filaU.style.marginTop = '10px';
+      filaU.innerHTML = '<div class="config-info"><div class="config-nombre">Dashboard unificado</div>' +
+        '<div class="config-muestra">Combina las tablas compatibles en un solo dashboard con la columna "Origen (tabla)"</div></div>';
+      const btnU = document.createElement('button');
+      btnU.type = 'button'; btnU.className = 'primary btn-mini';
+      btnU.textContent = 'Generar unificado';
+      btnU.addEventListener('click', () => generarUnificadoPbix(srv, btnU));
+      filaU.appendChild(btnU);
+      cont.appendChild(filaU);
+    }
     return;
   }
 
@@ -1035,10 +1160,11 @@ function mostrarError(txt){
   el.classList.add('show');
 }
 
-function procesarArchivo(file){
+async function procesarArchivo(file){
   if (!file) return;
   document.getElementById('errorFile').classList.remove('show');
   if (!libreriasListas()) return;
+  huellaActual = await hashArchivo(file);
   const nombre = file.name.toLowerCase();
 
   if (nombre.endsWith('.csv')){
@@ -1052,18 +1178,22 @@ function procesarArchivo(file){
     lector.onload = e => {
       try{
         const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array', cellDates:true});
-        // Elegir la hoja con más filas de datos (no siempre es la primera)
-        let mejorFilas = [], mejorHoja = '';
-        for (const nombreHoja of wb.SheetNames){
-          const filas = extraerFilasDeHoja(wb.Sheets[nombreHoja]);
-          if (filas.length > mejorFilas.length){ mejorFilas = filas; mejorHoja = nombreHoja; }
-        }
-        if (!mejorFilas.length){
+        // Leer TODAS las hojas y unificar las compatibles en un solo dashboard
+        const hojas = wb.SheetNames.map(n => ({nombre: n, filas: extraerFilasDeHoja(wb.Sheets[n])}));
+        const uni = unificarTablas(hojas, 'Origen (hoja)');
+        if (!uni || !uni.filas.length){
           mostrarError('No se encontraron datos tabulares en ninguna hoja del archivo. Verifica que haya una tabla con encabezados y filas de datos.');
           return;
         }
-        hojaUsada = wb.SheetNames.length > 1 ? mejorHoja : '';
-        iniciarDashboard(limpiarFilas(mejorFilas));
+        if (uni.usadas.length > 1){
+          hojaUsada = 'unificado: ' + uni.usadas.join(' + ') +
+            (uni.omitidas.length ? ' · omitidas: ' + uni.omitidas.join(', ') : '');
+        } else {
+          hojaUsada = wb.SheetNames.length > 1 ? uni.usadas[0] : '';
+          // Con una sola hoja usada, la columna de origen no aporta nada
+          uni.filas.forEach(f => { delete f['Origen (hoja)']; });
+        }
+        iniciarDashboard(limpiarFilas(uni.filas));
       }catch(err){
         mostrarError('No se pudo leer el archivo de Excel: ' + (err.message || 'error desconocido') +
           '. Asegúrate de que el archivo tenga una tabla con encabezados.');
@@ -1253,6 +1383,7 @@ function abrirConfiguracion(deteccion){
     <button class="primary" type="button" onclick="generarDesdeConfig()">Generar dashboard</button>`;
 
   const lista = document.getElementById('configLista');
+  consultarHuellaEnFondo();
   deteccion.forEach((col, i) => {
     const fila = document.createElement('div');
     fila.className = 'config-fila';
@@ -1327,7 +1458,7 @@ function reabrirConfiguracion(){
 function volverACarga(){
   Object.values(charts).forEach(c => c.destroy());
   charts = {};
-  datos = []; datosCrudos = []; columnas = []; filtrosActivos = {}; hojaUsada = '';
+  datos = []; datosCrudos = []; columnas = []; filtrosActivos = {}; hojaUsada = ''; huellaActual = ''; huellaPbixBase = '';
   inputFile.value = '';
   document.getElementById('dashboard').classList.remove('active');
   document.getElementById('configCols').style.display = 'none';
