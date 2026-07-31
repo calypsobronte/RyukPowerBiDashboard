@@ -52,6 +52,37 @@ def cargar_pbixray():
         return None
 
 
+# ---------- MongoDB (para compartir dashboards por URL) ----------
+# Configura MONGO_URI con tu cadena de conexión de MongoDB Atlas.
+# La colección se crea sola al primer guardado; por defecto "dashboard"
+# (cámbiala con MONGO_COLECCION si prefieres otro nombre).
+_COL = None
+
+def obtener_coleccion():
+    global _COL
+    if _COL is not None:
+        return _COL, None
+    uri = os.environ.get('MONGO_URI', '').strip()
+    if not uri:
+        return None, 'Falta configurar MONGO_URI (cadena de conexión de MongoDB Atlas) en el servidor.'
+    try:
+        from pymongo import MongoClient
+    except ImportError:
+        return None, 'Falta la librería pymongo en el servidor. Instálala con: pip install pymongo'
+    try:
+        cliente = MongoClient(uri, serverSelectionTimeoutMS=6000)
+        cliente.admin.command('ping')
+        db  = cliente[os.environ.get('MONGO_DB', 'ryukpowerbi')]
+        _COL = db[os.environ.get('MONGO_COLECCION', 'dashboard')]
+        return _COL, None
+    except Exception as e:
+        return None, f'No se pudo conectar a MongoDB: {e}'
+
+
+MAX_FILAS_COMPARTIR = int(os.environ.get('MAX_FILAS_COMPARTIR', 20000))
+MAX_JSON_MB = int(os.environ.get('MAX_JSON_MB', 8))
+
+
 class Manejador(BaseHTTPRequestHandler):
 
     # ---------- utilidades ----------
@@ -86,7 +117,9 @@ class Manejador(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
 
         if u.path == '/salud':
-            return self._json(200, {'ok': True, 'pbixray': cargar_pbixray() is not None})
+            return self._json(200, {'ok': True,
+                                    'pbixray': cargar_pbixray() is not None,
+                                    'mongo': bool(os.environ.get('MONGO_URI', '').strip())})
 
         if u.path == '/tabla':
             token  = q.get('token', [''])[0]
@@ -104,10 +137,62 @@ class Manejador(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(500, {'error': f'No se pudo leer la tabla "{nombre}": {e}'})
 
+        if u.path == '/dashboard':
+            col, err = obtener_coleccion()
+            if col is None:
+                return self._json(500, {'error': err})
+            id_dash = q.get('id', [''])[0]
+            if not id_dash:
+                return self._json(400, {'error': 'Falta el parámetro id.'})
+            try:
+                doc = col.find_one({'_id': id_dash})
+            except Exception as e:
+                return self._json(500, {'error': f'Error consultando MongoDB: {e}'})
+            if not doc:
+                return self._json(404, {'error': 'Dashboard no encontrado. El enlace puede ser incorrecto.'})
+            return self._json(200, {'titulo': doc.get('titulo',''),
+                                    'columnas': doc.get('columnas', []),
+                                    'datos': doc.get('datos', [])})
+
         return self._json(404, {'error': 'Ruta no encontrada'})
 
     def do_POST(self):
-        if urlparse(self.path).path != '/subir':
+        ruta = urlparse(self.path).path
+
+        if ruta == '/dashboard':
+            col, err = obtener_coleccion()
+            if col is None:
+                return self._json(500, {'error': err})
+            tam = int(self.headers.get('Content-Length', '0') or 0)
+            if tam <= 0:
+                return self._json(400, {'error': 'No llegó ningún contenido.'})
+            if tam > MAX_JSON_MB * 1024 * 1024:
+                return self._json(413, {'error': f'El dashboard supera el límite de {MAX_JSON_MB} MB. Reduce las filas o columnas.'})
+            try:
+                cuerpo = json.loads(self.rfile.read(tam).decode('utf-8'))
+            except Exception:
+                return self._json(400, {'error': 'El contenido no es JSON válido.'})
+            datos    = cuerpo.get('datos')
+            columnas = cuerpo.get('columnas')
+            if not isinstance(datos, list) or not datos:
+                return self._json(400, {'error': 'Faltan las filas de datos.'})
+            if not isinstance(columnas, list) or not columnas:
+                return self._json(400, {'error': 'Falta la configuración de columnas.'})
+            if len(datos) > MAX_FILAS_COMPARTIR:
+                datos = datos[:MAX_FILAS_COMPARTIR]
+            id_dash = uuid.uuid4().hex[:10]
+            doc = {'_id': id_dash,
+                   'titulo': str(cuerpo.get('titulo', ''))[:120],
+                   'columnas': columnas,
+                   'datos': datos,
+                   'creado': time.time()}
+            try:
+                col.insert_one(doc)
+            except Exception as e:
+                return self._json(500, {'error': f'No se pudo guardar en MongoDB: {e}'})
+            return self._json(200, {'id': id_dash, 'filas': len(datos)})
+
+        if ruta != '/subir':
             return self._json(404, {'error': 'Ruta no encontrada'})
 
         PBIXRay = cargar_pbixray()
@@ -164,6 +249,10 @@ if __name__ == '__main__':
     print('=' * 56)
     if not disponible:
         print('  ⚠ Falta pbixray. Ejecuta:  pip install pbixray pandas')
+    if not os.environ.get('MONGO_URI', '').strip():
+        print('  ⚠ Sin MONGO_URI: los enlaces compartidos estarán desactivados.')
+    else:
+        print(f"  MongoDB: base '{os.environ.get('MONGO_DB','ryukpowerbi')}' · colección '{os.environ.get('MONGO_COLECCION','dashboard')}'")
     print(f'  Escuchando en http://{HOST}:{PUERTO}')
     print('  Deja esta ventana abierta y sube tu .pbix en la página.')
     print('  (Ctrl+C para detener)')
