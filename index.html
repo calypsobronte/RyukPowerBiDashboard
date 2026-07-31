@@ -469,7 +469,7 @@
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
   <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
-  <span>v4.1</span>
+  <span>v4.2</span>
 </footer>
 
 <script>
@@ -675,7 +675,12 @@ async function cargarCompartido(id){
 }
 
 const __idCompartido = new URLSearchParams(location.search).get('d');
-if (__idCompartido) cargarCompartido(__idCompartido);
+if (__idCompartido){
+  // Ocultar el inicio de inmediato y cargar cuando TODO el script esté evaluado
+  // (las constantes del servidor se declaran más abajo en el archivo)
+  document.getElementById('setup').style.display = 'none';
+  setTimeout(() => cargarCompartido(__idCompartido), 0);
+}
 
 /* ---------------- Pestañas de la pantalla inicial ---------------- */
 
