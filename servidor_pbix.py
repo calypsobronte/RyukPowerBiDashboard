@@ -145,7 +145,7 @@ class Manejador(BaseHTTPRequestHandler):
 
         if u.path == '/salud':
             return self._json(200, {'ok': True,
-                                    'version': '5.3',
+                                    'version': '5.4',
                                     'pbixray': cargar_pbixray() is not None,
                                     'mongo': bool(os.environ.get('MONGO_URI', '').strip())})
 
@@ -193,8 +193,10 @@ class Manejador(BaseHTTPRequestHandler):
             if not doc:
                 return self._json(404, {'error': 'Dashboard no encontrado. El enlace puede ser incorrecto.'})
             return self._json(200, {'titulo': doc.get('titulo',''),
+                                    'tipo': doc.get('tipo', 'dashboard'),
                                     'columnas': doc.get('columnas', []),
-                                    'datos': doc.get('datos', [])})
+                                    'datos': doc.get('datos', []),
+                                    'informe': doc.get('informe')})
 
         return self._json(404, {'error': 'Ruta no encontrada'})
 
@@ -216,17 +218,31 @@ class Manejador(BaseHTTPRequestHandler):
                 return self._json(400, {'error': 'El contenido no es JSON válido.'})
             datos    = cuerpo.get('datos')
             columnas = cuerpo.get('columnas')
-            if not isinstance(datos, list) or not datos:
-                return self._json(400, {'error': 'Faltan las filas de datos.'})
-            if not isinstance(columnas, list) or not columnas:
-                return self._json(400, {'error': 'Falta la configuración de columnas.'})
-            if len(datos) > MAX_FILAS_COMPARTIR:
-                datos = datos[:MAX_FILAS_COMPARTIR]
+            informe  = cuerpo.get('informe')
+            es_informe = isinstance(informe, dict) and isinstance(informe.get('filas'), list) and informe.get('filas')
+            if es_informe:
+                if len(informe['filas']) > MAX_FILAS_COMPARTIR:
+                    informe['filas'] = informe['filas'][:MAX_FILAS_COMPARTIR]
+            else:
+                if not isinstance(datos, list) or not datos:
+                    return self._json(400, {'error': 'Faltan las filas de datos.'})
+                if not isinstance(columnas, list) or not columnas:
+                    return self._json(400, {'error': 'Falta la configuración de columnas.'})
+                if len(datos) > MAX_FILAS_COMPARTIR:
+                    datos = datos[:MAX_FILAS_COMPARTIR]
             huella = str(cuerpo.get('huella', ''))[:120]
             campos = {'titulo': str(cuerpo.get('titulo', ''))[:120],
-                      'columnas': columnas,
-                      'datos': datos,
                       'actualizado_en': time.time()}
+            total_filas = len(informe['filas']) if es_informe else len(datos)
+            if es_informe:
+                campos['tipo'] = 'informe'
+                campos['informe'] = informe
+                campos['columnas'] = []
+                campos['datos'] = []
+            else:
+                campos['tipo'] = 'dashboard'
+                campos['columnas'] = columnas
+                campos['datos'] = datos
 
             # Dashboards únicos: si el archivo (huella) ya tiene dashboard,
             # se actualiza ese mismo registro y el enlace no cambia.
@@ -237,7 +253,7 @@ class Manejador(BaseHTTPRequestHandler):
                         col.update_one({'_id': existente['_id']}, {'$set': campos})
                     except Exception as e:
                         return self._json(500, {'error': f'No se pudo actualizar en MongoDB: {e}'})
-                    return self._json(200, {'id': existente['_id'], 'filas': len(datos), 'actualizado': True})
+                    return self._json(200, {'id': existente['_id'], 'filas': total_filas, 'actualizado': True})
 
             id_dash = uuid.uuid4().hex[:10]
             doc = dict(campos, _id=id_dash, huella=huella, creado=time.time())
@@ -245,7 +261,7 @@ class Manejador(BaseHTTPRequestHandler):
                 col.insert_one(doc)
             except Exception as e:
                 return self._json(500, {'error': f'No se pudo guardar en MongoDB: {e}'})
-            return self._json(200, {'id': id_dash, 'filas': len(datos)})
+            return self._json(200, {'id': id_dash, 'filas': total_filas})
 
         if ruta != '/subir':
             return self._json(404, {'error': 'Ruta no encontrada'})
