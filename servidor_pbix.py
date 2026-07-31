@@ -145,6 +145,7 @@ class Manejador(BaseHTTPRequestHandler):
 
         if u.path == '/salud':
             return self._json(200, {'ok': True,
+                                    'version': '5.3',
                                     'pbixray': cargar_pbixray() is not None,
                                     'mongo': bool(os.environ.get('MONGO_URI', '').strip())})
 
@@ -267,7 +268,8 @@ class Manejador(BaseHTTPRequestHandler):
 
         try:
             modelo = PBIXRay(tmp.name)
-            tablas = [str(t) for t in modelo.tables]
+            tablas = [str(t) for t in modelo.tables
+                      if not str(t).startswith(('LocalDateTable_', 'DateTableTemplate_'))]
             token = uuid.uuid4().hex
             MODELOS[token] = {'modelo': modelo, 'ruta': tmp.name, 'hora': time.time()}
 
@@ -286,6 +288,45 @@ class Manejador(BaseHTTPRequestHandler):
                 respuesta['columnas'] = cols
             except Exception:
                 pass
+
+            errores = []
+            # Relaciones del modelo (para reconstruir el informe con cruces)
+            try:
+                rel = modelo.relationships
+                lista = []
+                for _, f in rel.iterrows():
+                    d = {str(k).lower(): str(v) for k, v in f.items()}
+                    def busca(*claves):
+                        for k in d:
+                            for c in claves:
+                                if c in k:
+                                    return d[k]
+                        return ''
+                    r = {'deTabla': busca('fromtable'), 'deCol': busca('fromcolumn'),
+                         'aTabla': busca('totable'),   'aCol': busca('tocolumn')}
+                    if r['deTabla'] and r['aTabla']:
+                        lista.append(r)
+                respuesta['relaciones'] = lista
+            except Exception as e:
+                errores.append(f'relaciones: {e}')
+            # Medidas DAX (nombre, tabla y expresión) para resolverlas en la web
+            try:
+                md = modelo.dax_measures
+                lista = []
+                for _, f in md.iterrows():
+                    nombre = tabla = expr = ''
+                    for k, v in f.items():
+                        kl = str(k).lower()
+                        if 'expression' in kl: expr = str(v)
+                        elif 'table' in kl:    tabla = str(v)
+                        elif 'name' in kl:     nombre = str(v)
+                    if nombre:
+                        lista.append({'tabla': tabla, 'nombre': nombre, 'dax': expr})
+                respuesta['medidas_detalle'] = lista
+            except Exception as e:
+                errores.append(f'medidas: {e}')
+            if errores:
+                respuesta['errores'] = errores
 
             return self._json(200, respuesta)
         except Exception as e:
