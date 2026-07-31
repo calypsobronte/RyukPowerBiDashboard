@@ -483,7 +483,7 @@
   <span>Filas cargadas: <span id="conteoFilas">—</span></span>
   <span>Creado por <a href="https://ryukplay.dev/" target="_blank" rel="noopener author">RyukPlay</a></span>
   <span>¿Algo más especializado? <a href="mailto:ryukdeathnotetv@gmail.com">ryukdeathnotetv@gmail.com</a></span>
-  <span>v5.3</span>
+  <span>v5.4</span>
 </footer>
 
 <script>
@@ -613,7 +613,8 @@ function unificarTablas(lista, etiquetaOrigen){
 const MAX_FILAS_COMPARTIR = 20000;
 
 async function compartirDashboard(){
-  if (!datos.length){ alert('Primero genera un dashboard.'); return; }
+  const esInforme = !!(__informe && document.getElementById('informePbix').classList.contains('active'));
+  if (!esInforme && !datos.length){ alert('Primero genera un dashboard.'); return; }
   const btn = document.getElementById('btnCompartir');
   const txt = btn.textContent;
   btn.disabled = true; btn.textContent = 'Creando enlace…';
@@ -622,12 +623,21 @@ async function compartirDashboard(){
     if (!urlServidorPbix)
       throw new Error('No se encontró el servidor de dashboards. Si necesitas ayuda escríbeme a ryukdeathnotetv@gmail.com');
 
-    const cuerpo = {
-      titulo: 'Dashboard' + (hojaUsada ? ' · ' + hojaUsada : ''),
-      huella: huellaActual || '',
-      columnas: columnas,
-      datos: datos.slice(0, MAX_FILAS_COMPARTIR)
-    };
+    const cuerpo = esInforme
+      ? { titulo: 'Informe reconstruido del .pbix',
+          huella: huellaActual || '',
+          informe: {
+            filas: __informe.filas.slice(0, MAX_FILAS_COMPARTIR),
+            slicers: __informe.slicers, kpis: __informe.kpis,
+            charts: __informe.charts, tablas: __informe.tablas,
+            omitidos: __informe.omitidos, sinMedidas: __informe.sinMedidas,
+            relInferidas: __informe.relInferidas
+          } }
+      : { titulo: 'Dashboard' + (hojaUsada ? ' · ' + hojaUsada : ''),
+          huella: huellaActual || '',
+          columnas: columnas,
+          datos: datos.slice(0, MAX_FILAS_COMPARTIR) };
+    const totalFilas = esInforme ? __informe.filas.length : datos.length;
     const r = await fetch(urlServidorPbix + '/dashboard', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -640,7 +650,7 @@ async function compartirDashboard(){
     let copiado = false;
     try{ await navigator.clipboard.writeText(enlace); copiado = true; }catch(e){}
     prompt('Enlace de tu dashboard' + (j.actualizado ? ' — dashboard existente actualizado, el enlace no cambió' : '') + (copiado ? ' (ya copiado al portapapeles)' : '') +
-      (datos.length > MAX_FILAS_COMPARTIR ? ' · se guardaron las primeras ' + MAX_FILAS_COMPARTIR.toLocaleString('es-CO') + ' filas' : '') + ':', enlace);
+      (totalFilas > MAX_FILAS_COMPARTIR ? ' · se guardaron las primeras ' + MAX_FILAS_COMPARTIR.toLocaleString('es-CO') + ' filas' : '') + ':', enlace);
   }catch(e){
     alert('No se pudo crear el enlace: ' + (e.message || e));
   }
@@ -660,6 +670,22 @@ async function cargarCompartido(id){
     const r = await fetch(urlServidorPbix + '/dashboard?id=' + encodeURIComponent(id));
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'No se pudo cargar.');
+    if (j.tipo === 'informe' && j.informe && Array.isArray(j.informe.filas) && j.informe.filas.length){
+      __informe = {
+        filas: j.informe.filas,
+        cols: new Set(),
+        slicers: j.informe.slicers || [], kpis: j.informe.kpis || [],
+        charts: j.informe.charts || [], tablas: j.informe.tablas || [],
+        omitidos: j.informe.omitidos || [], sinMedidas: !!j.informe.sinMedidas,
+        relInferidas: !!j.informe.relInferidas, erroresSrv: []
+      };
+      filtrosInforme = {};
+      hojaUsada = 'informe compartido';
+      if (j.titulo) document.querySelector('.brand-text p').textContent = j.titulo;
+      panel.style.display = 'none';
+      montarInforme();
+      return;
+    }
     if (!Array.isArray(j.datos) || !j.datos.length || !Array.isArray(j.columnas) || !j.columnas.length)
       throw new Error('El dashboard llegó incompleto.');
 
@@ -1216,7 +1242,7 @@ function montarInforme(){
   document.getElementById('btnNuevo').hidden = false;
   document.getElementById('btnImprimir').hidden = false;
   document.getElementById('btnColumnas').hidden = true;
-  document.getElementById('btnCompartir').hidden = true;
+  document.getElementById('btnCompartir').hidden = false;
 
   const cab = document.createElement('div');
   cab.className = 'informe-cabecera';
